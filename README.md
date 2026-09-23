@@ -3,7 +3,7 @@
 Cloud-native RESTful API optimized for distributed systems, ACID-ity, low-latency, and fault-tolerance.
 
 ## Architecture
-*   **SOLID principles:** Dependency Inversion to decouple business logic from infrastructure and ensure testability.
+*   **DDD & SOLID principles:** Dependency Inversion to decouple business logic from infrastructure and ensure testability.
 *   **OCC:** Prevents double-spending and deadlocks without pessimistic table locks.
 *   **Event-Driven Architecture:** Ensures dual-write safety and eventual consistency (wallet mutations and domain events commit atomically).
 *   **CDC Worker:** Async polling for At-Least-Once event dispatch.
