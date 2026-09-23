@@ -1,20 +1,22 @@
-High-throughput, ACID-compliant financial ledger in Go.
+# High-throughput, ACID-compliant Ledger in Golang (Go)
 
-## Architecture & System Design
-*   **OCC (Optimistic Concurrency Control):** Prevents double-spending and data-races in high-frequency transactions without pessimistic table locks.
-*   **Transactional Outbox:** Ensures dual-write safety. Wallet mutations and domain events commit atomically to PostgreSQL.
-*   **CDC Worker:** Async Go routine polling the outbox (`FOR UPDATE SKIP LOCKED`) for At-Least-Once event dispatch.
-*   **Lock-Sharded GCRA Rate Limiter:** In-memory O(1) rate limiter. Uses `sync.Map` and per-IP Mutexes to prevent global bottlenecks, with a background eviction daemon to avoid OOM.
+Cloud-native RESTful API optimized for distributed systems, low-latency, and fault-tolerance.
+
+## Architecture & Design Patterns
+*   **Domain-Driven Design & SOLID:** Dependency Inversion to decouple business logic from infrastructure, ensuring isolated testability.
+*   **OCC:** Prevents double-spending and deadlocks without pessimistic table locks.
+*   **Event-Driven Architecture:** Ensures dual-write safety and eventual consistency (wallet mutations and domain events commit atomically).
+*   **CDC Worker:** Async polling for At-Least-Once event dispatch.
+*   **Lock-Sharded GCRA Rate Limiter:** Implemented via `sync.Map` and per-IP Mutexes. Includes an eviction daemon to prevent OOM.
 *   **Zero-Trust Security:** JWT signature validation middleware.
 
-## Tech Stack
-*   **Language:** Go 1.22
-*   **Datastore:** PostgreSQL 15 (pgxpool)
-*   **Observability:** OpenTelemetry (OTLP), RED Metrics, Structured JSON Logging (`log/slog`)
-*   **Testing:** Testcontainers (Isolated DB integration), K6 (Load testing)
-*   **Infrastructure:** Multi-stage Dockerfile (Scratch target), GitHub Actions (CI/Linting)
+## Tech Stack & Infrastructure
+*   **Language:** Golang (Go 1.22).
+*   **Datastore:** PostgreSQL 15.
+*   **Observability:** OpenTelemetry (OTLP), RED Metrics, Structured JSON Logging (`log/slog`), Prometheus & Grafana ready.
+*   **Testing:** Testcontainers (isolated DB integration), K6 (load testing & benchmarking).
+*   **DevOps & CI/CD:** Multi-stage Dockerfile, Kubernetes readiness, GitHub Actions CI, `golangci-lint`.
 
-## Trade-offs & Future Scalability
-*   **Event Streaming:** Replace polling CDC worker with Debezium (WAL tailing) for real-time Kafka integration.
-*   **Distributed Rate Limiting:** Migrate in-memory GCRA to Redis + Lua scripts for multi-pod K8s synchronization.
-*   **Idempotency Keys:** Implement header-based idempotency keys via Redis to safely handle client network retries.
+## Trade-offs & Distributed Scalability
+*   **Distributed Rate Limiting:** GCRA designed to scale via Redis for multi-pod synchronization.
+*   **Idempotency Keys:** ready for header-based idempotency (via Redis).
