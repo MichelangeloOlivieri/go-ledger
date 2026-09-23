@@ -13,7 +13,7 @@ Cloud-native RESTful API optimized for distributed systems, ACID-ity, low-latenc
 ## Stack
 *   **Language:** Golang (Go 1.22).
 *   **Datastore:** PostgreSQL 15.
-*   **Observability:** OpenTelemetry (OTLP), RED Metrics, Structured JSON Logging (`log/slog`), Prometheus & Grafana ready.
+*   **Observability:** OpenTelemetry, RED Metrics, Structured JSON Logging, Prometheus & Grafana ready.
 *   **Testing:** Testcontainers (isolated DB integration), K6 (load testing & benchmarking).
 *   **DevOps & CI/CD:** Multi-stage Dockerfile, Kubernetes readiness, GitHub Actions CI, `golangci-lint`.
 
