@@ -13,10 +13,10 @@ jobs:
         with:
           go-version: '1.26.0'
       # performs static analysis and fails the build on violations
-      # - name: golangci-lint
-        # uses: golangci/golangci-lint-action@v3
-        # with:
-          # version: latest
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v3
+        with:
+          version: latest
       # executes the test suite and injects sensors to catch data-races
       - name: Run Tests with Race Detector
         run: go test -v -race ./...
