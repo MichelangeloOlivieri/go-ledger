@@ -1,26 +1,26 @@
-# Distributed Financial Ledger API (Go)
+# Financial Ledger API (Go)
 
-A cloud-native RESTful API simulating a financial ledger. Designed with a focus on LLD principles (SOLID, ACID, concurrency), low-latency, and fault-tolerance for highly scalable microservices environments.
+A cloud-native RESTful API in Go simulating a financial ledger. Designed with a focus on LLD principles (SOLID, ACID, concurrency), low-latency, and fault-tolerance.
 
 ## Design and Patterns
 
-This project tackles common distributed systems challenges (double-spending, dual-write problem, rate limiting) using standard enterprise patterns:
+This project tackles common distributed systems challenges (double-spending, dual-write problem, rate limiting) using standard patterns:
 
-* **Clean Architecture & Dependency Injection:** Strict separation of concerns (Hexagonal Architecture / DDD principles). Delivery layers (HTTP Handlers), Business Logic (Domain Services), and Persistence (Repositories) are fully decoupled via interfaces, enabling 100% mockability and enforcing SRP and DIP.
-* **ACID Transactions & Concurrency Control:** Uses PostgreSQL row-level locks and atomic increments (`FOR UPDATE SKIP LOCKED`) to prevent double-spending and race conditions and minimize I/O chatter.
-* **Transactional Outbox & Event-Driven Architecture:** An asynchronous Background Worker polls the outbox table to guarantee **At-Least-Once** dispatching to message brokers (e.g., Kafka/RabbitMQ), elegantly solving the Dual-Write Problem.
-* **Self-Healing Systems (Reaper Daemon):** A background cronjob automatically detects and rescues "zombie" `IN_FLIGHT` messages caused by pod crashes or network timeouts, ensuring eventual consistency without manual intervention.
-* **Idempotency:** Idempotency keys are enforced at the database level to handle network retries atomically and safely under adversarial conditions.
-* **Lock-Sharded GCRA Rate Limiter:** Prevents resource exhaustion with lock-sharding by using a `sync.Map` with per-IP mutexes. Includes a background eviction daemon to remove inactive IPs and prevent OOM (Out-Of-Memory) errors.
-* **Decorator Pattern (Middleware):** Cross-cutting concerns like Cryptographic Security (JWT signature validation) and Observability are implemented as HTTP middlewares to keep the core domain immaculate (OCP).
-* **Observability & Telemetry:** Implements a context-aware JSON logging strategy and a middleware to intercept and record RED (Rate, Errors, Duration) metrics for seamless integration with Datadog/Grafana.
+* **Clean Architecture & Dependency Injection:** separation of concerns (Hexagonal Architecture / DDD principles). Delivery layers (HTTP Handlers), business logic (Domain Services), and persistence (Repositories) are fully decoupled via interfaces, enabling 100% mockability and enforcing SRP and DIP.
+* **ACID Transactions & Concurrency Control:** uses PostgreSQL row-level locks and atomic increments to prevent double-spending and race conditions and minimize I/O chatter.
+* **Transactional Outbox & Event-Driven Architecture:** an asynchronous Background Worker polls the outbox table to guarantee **At-Least-Once** dispatching to message brokers (e.g., Kafka/RabbitMQ, to be added), tackling the Dual-Write Problem.
+* **Self-Healing Mechanics:** other background workers ensure system resilience automatically (e.g. a cronjob rescues stuck messages, and a background eviction worker clears inactive IPs from the rate limiter).
+* **Idempotency:** idempotency keys are enforced at the database level to handle network retries atomically.
+* **Lock-Sharded GCRA Rate Limiter:** prevents resource exhaustion by using a `sync.Map` with per-IP mutexes (lock-sharding).
+* **Decorator Pattern:** Functionalities like cryptographic security  and observability are implemented as HTTP middlewares to keep the core domain intact.
+* **Observability & Telemetry:** implements a context-aware JSON logging strategy and a middleware to intercept and record RED (Rate, Errors, Duration) metrics (for future integration with Datadog/Grafana).
 
 ## Stack
 
-* **Language:** Go 1.22 (leveraging Goroutines and Channels for high-throughput async processing)
-* **Datastore:** PostgreSQL 15 (optimized for relational integrity and transactional safety)
-* **Testing:** Testcontainers (isolated DB integration tests), k6 (load testing & stress testing), standard `testing` package (TDD & Race Detector).
-* **DevOps & CI/CD:** Multi-stage Dockerfile (scratch image for minimal attack surface), GitHub Actions pipeline, `golangci-lint`, Makefile.
+* **Language:** Go 1.22
+* **Datastore:** PostgreSQL 15
+* **Testing:** Testcontainers, k6, standard `testing` package (TDD & Race Detector).
+* **DevOps & CI/CD:** Multi-stage Dockerfile, `golangci-lint`, Makefile.
 
 ## Quick Start
 
