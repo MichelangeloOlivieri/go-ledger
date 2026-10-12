@@ -77,6 +77,13 @@ func (w *OutboxWorker) reapStaleEvents(ctx context.Context) {
 	}
 }
 
+type outboxEvent struct {
+	id          int
+	aggregateID int
+	eventType   string
+	payload     string
+}
+
 func (w *OutboxWorker) processBatch(ctx context.Context) int {
 	extractQuery := `
 		UPDATE outbox_events 
@@ -97,12 +104,6 @@ func (w *OutboxWorker) processBatch(ctx context.Context) int {
 		return 0
 	}
 
-	type outboxEvent struct {
-		id          int
-		aggregateID int
-		eventType   string
-		payload     string
-	}
 	var events []outboxEvent
 	var malformedIDs []int
 
