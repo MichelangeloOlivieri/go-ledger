@@ -3,21 +3,22 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
-	"ledger/internal/middleware"
+	"ledger/internal/wallet"
 )
 
-type CreditRequest struct {
-	Amount int64 `json:"amount"` // No account_id exposed to the client
+type TransferRequest struct {
+	ToAccountID int64 `json:"to_account_id"`
+	Amount      int64 `json:"amount"`
 }
 
-// interface for testing
 type WalletManager interface {
-	Credit(ctx context.Context, accountID int, amount int64, idempotencyKey string) (int64, error)
+	Transfer(ctx context.Context, fromID, toID int64, amount int64, idempotencyKey string) error
 }
 
 type APIServer struct {
@@ -25,50 +26,86 @@ type APIServer struct {
 }
 
 func NewAPIServer(ws WalletManager) *APIServer {
-	return &APIServer{
-		walletService: ws,
-	}
+	return &APIServer{walletService: ws}
 }
 
-func (s *APIServer) HandleCredit(w http.ResponseWriter, r *http.Request) {
-	var req CreditRequest
-	err := json.NewDecoder(r.Body).Decode(&req)
+var (
+	respInvalidJSON        = []byte(`{"error": "invalid_json_payload"}`)
+	respUnauthorized       = []byte(`{"error": "unauthorized_identity_missing"}`)
+	respMalformedIdentity  = []byte(`{"error": "malformed_identity_format"}`)
+	respInvalidAmount      = []byte(`{"error": "transfer_amount_must_be_strictly_positive"}`)
+	respSelfTransfer       = []byte(`{"error": "self_transfer_not_allowed"}`)
+	respMissingIdempotency = []byte(`{"error": "idempotency_key_missing"}`)
+	respInternalError      = []byte(`{"error": "internal_server_error"}`)
+	respSuccess            = []byte(`{"status": "success", "message": "transfer transaction successful"}`)
+)
+
+func writeJSON(w http.ResponseWriter, status int, body []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
+func (s *APIServer) HandleTransfer(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 10240)
+	defer r.Body.Close()
+
+	var req TransferRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, respInvalidJSON)
+		return
+	}
+
+	// identity extraction
+	userIDStr, ok := r.Context().Value(userIDKey).(string)
+	if !ok || userIDStr == "" {
+		writeJSON(w, http.StatusUnauthorized, respUnauthorized)
+		return
+	}
+
+	fromAccountID, err := strconv.ParseInt(userIDStr, 10, 64)
 	if err != nil {
-		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
+		writeJSON(w, http.StatusBadRequest, respMalformedIdentity)
 		return
 	}
 
+	// domain validations
 	if req.Amount <= 0 {
-		http.Error(w, "Credit amount must be strictly positive", http.StatusBadRequest)
+		writeJSON(w, http.StatusBadRequest, respInvalidAmount)
 		return
 	}
 
-	// extracts the cryptographically secured identity from the JWT middleware context
-	accountID, ok := r.Context().Value(middleware.UserIDKey).(int)
-	if !ok {
-		http.Error(w, "Identity missing from context", http.StatusInternalServerError)
+	if fromAccountID == req.ToAccountID {
+		writeJSON(w, http.StatusBadRequest, respSelfTransfer)
 		return
 	}
 
+	// idempotency check
 	idempotencyKey := r.Header.Get("Idempotency-Key")
 	if idempotencyKey == "" {
-		http.Error(w, "Idempotency-Key missing", http.StatusBadRequest)
+		writeJSON(w, http.StatusBadRequest, respMissingIdempotency)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 
-	// executes business logic
-	newBalance, err := s.walletService.Credit(ctx, accountID, req.Amount, idempotencyKey)
-	if err != nil {
-		// logs the real error internally for debugging and O11y
-		slog.ErrorContext(ctx, "Transaction failed", "wallet_id", accountID, "error", err)
-		// providing exact error info
-		http.Error(w, `{"error": "internal_server_error"}`, http.StatusInternalServerError)
+	// business logic
+	if err := s.walletService.Transfer(ctx, fromAccountID, req.ToAccountID, req.Amount, idempotencyKey); err != nil {
+		slog.ErrorContext(ctx, "Transaction failed", "from", fromAccountID, "to", req.ToAccountID, "error", err)
+
+		switch {
+		case errors.Is(err, wallet.ErrInsufficientFunds):
+			writeJSON(w, http.StatusUnprocessableEntity, []byte(`{"error": "insufficient_funds"}`))
+		case errors.Is(err, wallet.ErrAccountNotFound):
+			writeJSON(w, http.StatusNotFound, []byte(`{"error": "account_not_found"}`))
+		case errors.Is(err, context.DeadlineExceeded):
+			writeJSON(w, http.StatusGatewayTimeout, []byte(`{"error": "timeout_processing_transaction"}`))
+		default:
+			writeJSON(w, http.StatusInternalServerError, respInternalError)
+		}
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	_, _ = fmt.Fprintf(w, "Credit transaction successful. New Balance: %d\n", newBalance)
+	writeJSON(w, http.StatusOK, respSuccess)
 }

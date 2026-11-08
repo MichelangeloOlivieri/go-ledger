@@ -4,83 +4,129 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"ledger/internal/middleware"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"ledger/internal/wallet"
 )
 
-// mock WalletManager
 type mockWallet struct {
-	balance int64
-	err     error
+	err error
 }
 
-func (m *mockWallet) Credit(ctx context.Context, accountID int, amount int64, idempotencyKey string) (int64, error) {
-	return m.balance, m.err
+func (m *mockWallet) Transfer(ctx context.Context, fromID int64, toID int64, amount int64, idempotencyKey string) error {
+	return m.err
 }
 
-// tests HandleCredit in case of: success, malformed json, failed DB transaction, missing idempotency
-func TestHandleCredit(t *testing.T) {
+func TestHandleTransfer(t *testing.T) {
 	tests := []struct {
 		name           string
-		walletBalance  int64
 		walletErr      error
 		payload        []byte
 		idempotencyKey string
+		injectIdentity string // simulates validated JWT
 		expectedStatus int
 	}{
 		{
-			name:           "Success - Valid transaction",
-			walletBalance:  150,
+			name:           "Success - Valid transaction (Zero-Trust Auth)",
 			walletErr:      nil,
-			payload:        []byte(`{"amount": 50}`),
+			payload:        []byte(`{"to_account_id": 2, "amount": 50}`),
 			idempotencyKey: "test-key-123",
+			injectIdentity: "1",
 			expectedStatus: http.StatusOK,
 		},
 		{
-			name:           "Invalid JSON Payload",
-			walletBalance:  0,
+			name:           "Security - IDOR Exploit Prevented (Missing Identity Context)",
+			walletErr:      nil,
+			payload:        []byte(`{"to_account_id": 2, "amount": 50}`),
+			idempotencyKey: "test-key-123",
+			injectIdentity: "",
+			expectedStatus: http.StatusUnauthorized,
+		},
+		{
+			name:           "Security - Malformed Subject Claim",
+			walletErr:      nil,
+			payload:        []byte(`{"to_account_id": 2, "amount": 50}`),
+			idempotencyKey: "test-key-123",
+			injectIdentity: "invalid-uuid",
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "Domain Error - Insufficient Funds",
+			walletErr:      wallet.ErrInsufficientFunds,
+			payload:        []byte(`{"to_account_id": 2, "amount": 100}`),
+			idempotencyKey: "test-key-123",
+			injectIdentity: "1",
+			expectedStatus: http.StatusUnprocessableEntity,
+		},
+		{
+			name:           "Domain Error - Account Not Found",
+			walletErr:      wallet.ErrAccountNotFound,
+			payload:        []byte(`{"to_account_id": 2, "amount": 100}`),
+			idempotencyKey: "test-key-123",
+			injectIdentity: "1",
+			expectedStatus: http.StatusNotFound,
+		},
+		{
+			name:           "Domain Error - DB Constraint",
+			walletErr:      errors.New("db transaction failed"),
+			payload:        []byte(`{"to_account_id": 2, "amount": 100}`),
+			idempotencyKey: "test-key-123",
+			injectIdentity: "1",
+			expectedStatus: http.StatusInternalServerError,
+		},
+		{
+			name:           "Edge Defense - Self Transfer",
+			walletErr:      nil,
+			payload:        []byte(`{"to_account_id": 1, "amount": 50}`),
+			idempotencyKey: "test-key-123",
+			injectIdentity: "1",
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "Edge Defense - Malformed JSON",
 			walletErr:      nil,
 			payload:        []byte(`{"amount": "fifty"}`),
 			idempotencyKey: "test-key-123",
+			injectIdentity: "1",
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
-			name:           "Missing Idempotency Key",
-			walletBalance:  0,
+			name:           "Edge Defense - Negative Amount",
 			walletErr:      nil,
-			payload:        []byte(`{"amount": 100}`),
-			idempotencyKey: "",
+			payload:        []byte(`{"to_account_id": 2, "amount": -10}`),
+			idempotencyKey: "test-key-123",
+			injectIdentity: "1",
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
-			name:           "Domain Error - DB Constraint or Internal Failure",
-			walletBalance:  0,
-			walletErr:      errors.New("db transaction failed"),
-			payload:        []byte(`{"amount": 100}`),
+			name:           "Edge Defense - OOM JSON Bomb (Payload > 10KB)",
+			walletErr:      nil,
+			payload:        []byte(`{"to_account_id": 2, "amount": 50, "pad": "` + strings.Repeat("x", 11000) + `"}`),
 			idempotencyKey: "test-key-123",
-			expectedStatus: http.StatusInternalServerError,
+			injectIdentity: "1",
+			expectedStatus: http.StatusBadRequest,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			server := NewAPIServer(
-				&mockWallet{balance: tt.walletBalance, err: tt.walletErr},
-			)
-
-			req := httptest.NewRequest(http.MethodPost, "/credit", bytes.NewReader(tt.payload))
-			req.RemoteAddr = "192.168.1.100:12345"
+			server := NewAPIServer(&mockWallet{err: tt.walletErr})
+			req := httptest.NewRequest(http.MethodPost, "/transfers", bytes.NewReader(tt.payload))
 
 			if tt.idempotencyKey != "" {
 				req.Header.Set("Idempotency-Key", tt.idempotencyKey)
 			}
 
-			ctx := context.WithValue(req.Context(), middleware.UserIDKey, 1)
-			req = req.WithContext(ctx)
+			if tt.injectIdentity != "" {
+				ctx := context.WithValue(req.Context(), userIDKey, tt.injectIdentity)
+				req = req.WithContext(ctx)
+			}
+
 			rec := httptest.NewRecorder()
-			server.HandleCredit(rec, req)
+			server.HandleTransfer(rec, req)
 
 			if rec.Code != tt.expectedStatus {
 				t.Errorf("expected status %d; got %d", tt.expectedStatus, rec.Code)

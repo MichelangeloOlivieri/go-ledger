@@ -1,3 +1,1 @@
--- truncates all tables involved in the stress test
-
-TRUNCATE TABLE wallets, outbox_events, idempotency_keys CASCADE;
+TRUNCATE TABLE accounts, idempotency_keys, entries, outbox_events CASCADE;

@@ -10,7 +10,7 @@ import (
 )
 
 type EventPublisher interface {
-	Publish(ctx context.Context, aggregateID int, eventType, payload string) error
+	Publish(ctx context.Context, aggregateID string, eventType string, payload string) error
 }
 
 type OutboxWorker struct {
@@ -25,12 +25,8 @@ func NewOutboxWorker(db *pgxpool.Pool, pub EventPublisher) *OutboxWorker {
 	}
 }
 
-// initiates the polling daemon to process the outbox table asynchronously
 func (w *OutboxWorker) Start(ctx context.Context) {
 	slog.Info("[CDC Worker] Started dynamic polling...")
-
-	// launches the background reaper cronjob concurrently
-	go w.reaperDaemon(ctx)
 
 	for {
 		select {
@@ -40,6 +36,7 @@ func (w *OutboxWorker) Start(ctx context.Context) {
 		default:
 			processed := w.processBatch(ctx)
 
+			// backoff to prevent DB thrashing when empty
 			if processed == 0 {
 				time.Sleep(2 * time.Second)
 			}
@@ -47,139 +44,103 @@ func (w *OutboxWorker) Start(ctx context.Context) {
 	}
 }
 
-// background cronjob that rescues zombie IN_FLIGHT messages
-func (w *OutboxWorker) reaperDaemon(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			w.reapStaleEvents(ctx)
-		}
-	}
-}
-
-// resets records stuck in IN_FLIGHT state due to worker crashes
-func (w *OutboxWorker) reapStaleEvents(ctx context.Context) {
-	reapQuery := `
-		UPDATE outbox_events 
-		SET status = 'PENDING' 
-		WHERE status = 'IN_FLIGHT' 
-		AND created_at < NOW() - INTERVAL '5 minutes'
-	`
-	_, err := w.db.Exec(ctx, reapQuery)
-
-	if err != nil {
-		slog.ErrorContext(ctx, "[CDC Worker] Reaper failed to rescue zombie records", "error", err)
-	}
-}
-
 type outboxEvent struct {
 	id          int
-	aggregateID int
+	aggregateID string
 	eventType   string
 	payload     string
 }
 
 func (w *OutboxWorker) processBatch(ctx context.Context) int {
-	extractQuery := `
-		UPDATE outbox_events 
-		SET status = 'IN_FLIGHT' 
-		WHERE id IN (
-			SELECT id FROM outbox_events 
-			WHERE status = 'PENDING' 
-			FOR UPDATE SKIP LOCKED 
-			LIMIT 100
-		)
-		RETURNING id, aggregate_id, event_type, payload;
-	`
+	txCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 
-	// extracting rows
-	rows, err := w.db.Query(ctx, extractQuery)
+	tx, err := w.db.Begin(txCtx)
 	if err != nil {
-		slog.ErrorContext(ctx, "[CDC Worker] Failed to extract outbox events", "error", err)
+		slog.ErrorContext(txCtx, "[CDC Worker] Failed to begin transaction", "error", err)
+		return 0
+	}
+	defer tx.Rollback(txCtx)
+
+	query := `
+		SELECT id, aggregate_id, event_type, payload
+		FROM outbox_events
+		FOR UPDATE SKIP LOCKED
+		LIMIT 100;
+	`
+	rows, err := tx.Query(txCtx, query)
+	if err != nil {
+		slog.ErrorContext(txCtx, "[CDC Worker] Failed to extract events", "error", err)
 		return 0
 	}
 
-	var events []outboxEvent
-	var malformedIDs []int
-
-	// reading from extracted rows
+	events := make([]outboxEvent, 0, 100)
 	for rows.Next() {
 		var e outboxEvent
-		err := rows.Scan(&e.id, &e.aggregateID, &e.eventType, &e.payload)
-
-		if err != nil {
-			slog.ErrorContext(ctx, "[CDC Worker] Malformed data detected", "error", err)
-			malformedIDs = append(malformedIDs, e.id)
-			continue
+		if err := rows.Scan(&e.id, &e.aggregateID, &e.eventType, &e.payload); err != nil {
+			slog.ErrorContext(txCtx, "[CDC Worker] DB scan failed", "error", err)
+			rows.Close()
+			return 0
 		}
-
 		events = append(events, e)
 	}
-	// closure to free the db socket before network I/O starts
 	rows.Close()
 
-	if len(events) == 0 && len(malformedIDs) == 0 {
+	if len(events) == 0 {
 		return 0
 	}
 
-	var processedIDs []int
-	var failedIDs []int
+	processedIDs := w.publishEvents(txCtx, events)
+
+	if len(processedIDs) == 0 {
+		return 0
+	}
+
+	_, err = tx.Exec(txCtx, `DELETE FROM outbox_events WHERE id = ANY($1)`, processedIDs)
+	if err != nil {
+		slog.ErrorContext(txCtx, "[CDC Worker] Failed to delete processed events", "error", err)
+		return 0
+	}
+
+	if err := tx.Commit(txCtx); err != nil {
+		slog.ErrorContext(txCtx, "[CDC Worker] DB commit failed", "error", err)
+		return 0
+	}
+
+	return len(processedIDs)
+}
+
+// ================================================================================================
+// HELPER FUNCTIONS
+// ================================================================================================
+
+func (w *OutboxWorker) publishEvents(ctx context.Context, events []outboxEvent) []int {
+	processedIDs := make([]int, 0, len(events))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
-	// avoids reading I/O sequentially
 	for _, e := range events {
-
 		wg.Add(1)
 		go func(event outboxEvent) {
 			defer wg.Done()
 
-			err := w.publisher.Publish(ctx, event.aggregateID, event.eventType, event.payload)
-			mu.Lock()
-			defer mu.Unlock()
+			// explicit timeout avoids goroutine leaks if publisher hangs
+			pubCtx, cancelPub := context.WithTimeout(ctx, 5*time.Second)
+			defer cancelPub()
 
+			err := w.publisher.Publish(pubCtx, event.aggregateID, event.eventType, event.payload)
+
+			// mutex prevents data races on shared slices across goroutines
+			mu.Lock()
 			if err != nil {
-				slog.ErrorContext(ctx, "[CDC Worker] Failed to publish event", "error", err)
-				failedIDs = append(failedIDs, event.id)
+				slog.ErrorContext(ctx, "[CDC Worker] Publish failed, will retry later", "id", event.id, "error", err)
 			} else {
 				processedIDs = append(processedIDs, event.id)
 			}
+			mu.Unlock()
 		}(e)
 	}
-
 	wg.Wait()
-	processedIDs = append(processedIDs, malformedIDs...)
 
-	// cleanup successfully dispatched messages
-	if len(processedIDs) > 0 {
-		deleteQuery := `
-			DELETE 
-			FROM outbox_events 
-			WHERE id = ANY($1)
-		`
-		_, err := w.db.Exec(ctx, deleteQuery, processedIDs)
-		if err != nil {
-			slog.ErrorContext(ctx, "[CDC Worker] Failed to delete processed records", "error", err)
-		}
-	}
-
-	// revert failed messages back for the next tick
-	if len(failedIDs) > 0 {
-		revertQuery := `
-			UPDATE outbox_events 
-			SET status = 'PENDING' 
-			WHERE id = ANY($1)
-		`
-		_, err := w.db.Exec(ctx, revertQuery, failedIDs)
-		if err != nil {
-			slog.ErrorContext(ctx, "[CDC Worker] Failed to revert failed records", "error", err)
-		}
-	}
-
-	return len(processedIDs)
+	return processedIDs
 }

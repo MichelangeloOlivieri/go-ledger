@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 2s
+      timeout: 5s
+      retries: 5
+
+  migrate:
+    image: migrate/migrate:v4.18.1
+    volumes:
+      - ./migrations:/migrations
+    command: -path /migrations -database "postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable" up
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build: .
+    environment:
+      # SOTA: Static pool sizing prevents connection churn under heavy load
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable&pool_max_conns=20&pool_min_conns=20
+      - STRESS_TEST=true
+    ports:
+      - "8000:8000"
+    # no healthcheck for simplicity
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  k6:
+    image: grafana/k6:latest
+    profiles:
+      - testing
+    volumes:
+      - .:/app

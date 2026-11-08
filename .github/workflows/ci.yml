@@ -1,22 +1,51 @@
 name: Ledger CI
-# triggers the CI pipeline on new commits or pull requests
-on: [push, pull_request]
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
 jobs:
   build-and-test:
-    # provides an ephemeral Ubuntu VM
     runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
-      # clones the code into the VM workspace
       - uses: actions/checkout@v4
-      # installs the Go compiler with the correct version
+
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.0'
-      # performs static analysis and fails the build on violations
-      # - name: golangci-lint
-        # uses: golangci/golangci-lint-action@v3
-        # with:
-          # version: latest
-      # executes the test suite and injects sensors to catch data-races
+          cache: true 
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v3
+        with:
+          version: v1.55.2
+          args: --timeout=5m
+
       - name: Run Tests with Race Detector
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
         run: go test -v -race ./...
+
+      - name: Verify Build
+        run: go build -trimpath -ldflags="-s -w" -o ledger-api cmd/ledger/main.go

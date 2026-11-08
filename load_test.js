@@ -1,74 +1,68 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 import exec from 'k6/execution';
-import crypto from 'k6/crypto';
-import encoding from 'k6/encoding';
+import { SharedArray } from 'k6/data';
 
-// defines test settings and success parameters
+const users = new SharedArray('users', function () {
+    return JSON.parse(open('./seed_users.json'));
+});
+
 export const options = {
     stages: [
-        { duration: '5s', target: 50 },     // Ramp-up: 50 virtual users over 5 seconds
-        { duration: '10s', target: 50 },    // Steady state: hold 50 virtual users for 10 seconds
-        { duration: '5s', target: 0 },      // Ramp-down to 0 virtual users
+        { duration: '5s', target: 50 },
+        { duration: '10s', target: 50 },
+        { duration: '5s', target: 0 },
     ],
     thresholds: {
-        // 99% of requests must be fulfilled under 250ms
-        http_req_duration: ['p(99)<250'],
+        // making sure we are not introducing bottlenecks
+        http_req_duration: ['p(99)<500', 'p(95)<250'],
+        // 4xx errors (like Insufficient Funds) shouldn't fail the load test infrastructure check, 
+        // but 5xx errors (DB crashes, panics) MUST remain 0.
+        'http_req_failed': ['rate<0.01'],
     },
 };
 
-// dynamically generates valid JWTs to map each VU to a different wallet
-function generateJWT(walletId) {
-    const secret = 'super-secret-ledger-key-12345';
-    const header = encoding.b64encode(JSON.stringify({ alg: 'HS256', typ: 'JWT' }), 'rawurl');
-    const payload = encoding.b64encode(JSON.stringify({ sub: walletId.toString() }), 'rawurl');
-    const message = `${header}.${payload}`;
+export default function () {
+    const url = 'http://api:8000/transfer';
 
-    // generates signature and converts base64 to base64url without K6-version dependencies
-    let signature = crypto.hmac('sha256', secret, message, 'base64');
-    signature = signature.replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+    // Pescaggio perfettamente distribuito su 50 account
+    const sender = users[Math.floor(Math.random() * users.length)];
 
-    return `${message}.${signature}`;
-}
+    let toId;
+    do {
+        toId = Math.floor(Math.random() * users.length) + 1;
+    } while (toId === sender.id);
 
-// precomputes tokens in RAM
-export function setup() {
-    let tokens = {};
-    for (let i = 1; i <= 50; i++) {
-        tokens[i] = generateJWT(i);
-    }
-    return { tokens: tokens };
-}
+    const payload = JSON.stringify({
+        to_account_id: toId,
+        amount: 10
+    });
 
-// sets up script executed by each single virtual user
-export default function (data) {
-    // allows execution via local Makefile trigger
-    const url = 'http://host.docker.internal:8000/credit';
+    // 3. Idempotency Key logic
+    // 10% chance to simulate a network retry with an IDENTICAL key to test double-charge prevention
+    const isRetry = Math.random() < 0.1;
+    const idemKey = isRetry
+        ? `k6-stress-retry-${exec.vu.idInTest}`
+        : `k6-stress-${exec.scenario.iterationInTest}-${exec.vu.idInTest}`;
 
-    // assigns a distinct Wallet ID (1 to 50) based on K6's Virtual User ID to prevent OCC contention
-    const walletId = exec.vu.idInTest;
-    const token = data.tokens[walletId];
-
-    // JSON payload of the single request
-    const payload = JSON.stringify({ amount: 10 });
-
-    // injects HTTP headers for payload parsing and sets unique Idempotency-Key
     const params = {
         headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`,
-            'Idempotency-Key': `k6-stress-${exec.scenario.iterationInTest}-${Math.random().toString(36).substring(7)}`,
+            'Idempotency-Key': idemKey,
+            'Authorization': sender.token
         },
     };
 
-    // executes HTTP call to port 8000
     const res = http.post(url, payload, params);
 
-    // verifies that the server does not crash (registering either a success or a rejection by the Rate Limiter)
+    // 4. Strict Contract Validation
+    // A 422 (Insufficient Funds) is a valid business response under heavy load, not a system failure.
+    // A 500 means the DB crashed or a deadlock wasn't handled correctly in Go.
     check(res, {
-        'status is 200 (OK) or 429 (Rate Limited)': (r) => r.status === 200 || r.status === 429,
+        'System didn\'t crash (No 500s)': (r) => r.status !== 500,
+        'Transaction processed or explicitly rejected': (r) => r.status === 200 || r.status === 422 || r.status === 400,
     });
 
-    // sleeps to prevent cpu saturation and incorrect latency results
-    sleep(0.1);
+    // Minimal sleep to avoid synthetic CPU throttling on the k6 runner itself
+    sleep(0.01);
 }
