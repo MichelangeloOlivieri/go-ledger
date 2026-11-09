@@ -21,11 +21,9 @@ const (
 )
 
 func main() {
-	// 1. SOTA: Preallocate slice capacity to prevent reallocation overhead in the GC
 	users := make([]SeedUser, 0, NumUsers)
 	secretKey := []byte(Secret)
 
-	// 2. Generate JWTs for k6
 	for i := 1; i <= NumUsers; i++ {
 		claims := jwt.MapClaims{
 			"sub":   fmt.Sprintf("%d", i),
@@ -44,31 +42,26 @@ func main() {
 		})
 	}
 
-	// 3. Write JSON for k6
 	jsonFile, err := os.Create("seed_users.json")
 	if err != nil {
 		panic(fmt.Errorf("failed to create json file: %w", err))
 	}
 	defer jsonFile.Close()
 
-	// SOTA: wrap the file writer in a buffer to minimize disk I/O syscalls for large JSONs
 	bufferedWriter := bufio.NewWriter(jsonFile)
 	if err := json.NewEncoder(bufferedWriter).Encode(users); err != nil {
 		panic(fmt.Errorf("failed to encode users: %w", err))
 	}
-	// Important: flush the remaining bytes from RAM to disk
 	if err := bufferedWriter.Flush(); err != nil {
 		panic(fmt.Errorf("failed to flush json buffer: %w", err))
 	}
 
-	// 4. Generate perfectly aligned SQL for Postgres
 	sqlFile, err := os.Create("scripts/seed.sql")
 	if err != nil {
 		panic(fmt.Errorf("failed to create sql file: %w", err))
 	}
 	defer sqlFile.Close()
 
-	// ARCHITECTURAL NOTE: multi-line strings in Go preserve exact formatting
 	sqlTemplate := `
 		INSERT INTO accounts (id, balance)
 		SELECT generate_series(1, %[1]d), 1000000000000
