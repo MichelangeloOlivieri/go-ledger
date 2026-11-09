@@ -42,7 +42,7 @@ func (w *WalletService) Transfer(ctx context.Context, fromID, toID int64, amount
 		return fmt.Errorf("idempotency claim error: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return nil // Already processed, return success implicitly
+		return nil
 	}
 
 	// 2. Lock Ordering

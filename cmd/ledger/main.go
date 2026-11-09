@@ -27,12 +27,12 @@ func main() {
 
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if jwtSecret == "" {
-		jwtSecret = "HSsuper-secret-ledger-key-123456" // Default solo per test locali
+		jwtSecret = "HSsuper-secret-ledger-key-123456"
 	}
 
 	ctx := context.Background()
 
-	// API Pool: scales for high concurrency, tolerates blocking locks
+	// API pool
 	apiCfg, err := pgxpool.ParseConfig(dbUrl)
 	if err != nil {
 		slog.Error("Failed to parse database URL", "error", err)
@@ -47,7 +47,7 @@ func main() {
 	}
 	defer apiPool.Close()
 
-	// Worker Pool: isolated resources ensuring constant CDC polling throughput
+	// worker pool
 	workerCfg, _ := pgxpool.ParseConfig(dbUrl)
 	workerCfg.MaxConns = 20
 
@@ -69,13 +69,12 @@ func main() {
 		outboxWorker.Start(workerCtx)
 	}()
 
-	// Edge setup
+	// setup
 	walletService := wallet.NewWalletService(apiPool)
 	apiServer := api.NewAPIServer(walletService)
 	tokenAuth := jwtauth.New("HS256", []byte(jwtSecret), nil)
 	mux := api.NewRouter(apiServer, tokenAuth)
 
-	// SOTA: strict timeouts to mitigate Slowloris attacks
 	srv := &http.Server{
 		Addr:         ":8000",
 		Handler:      mux,
@@ -93,7 +92,7 @@ func main() {
 		}
 	}()
 
-	// Graceful shutdown coordination
+	// graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
@@ -101,13 +100,8 @@ func main() {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	// SOTA: Cancel the worker context IMMEDIATELY alongside the HTTP shutdown.
-	// This ensures the worker finishes its current transaction (via SKIP LOCKED)
-	// without starting new ones, preventing zombie events or race conditions.
 	workerCancel()
 
-	// Wait for the HTTP server to finish active requests
 	if err = srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("Forced HTTP server shutdown", "error", err)
 	}
@@ -118,7 +112,6 @@ func main() {
 		close(workerDone)
 	}()
 
-	// Wait for the worker to finish its active DB transaction
 	select {
 	case <-workerDone:
 		slog.Info("CDC Worker cleanly stopped.")

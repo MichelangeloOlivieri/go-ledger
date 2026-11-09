@@ -25,7 +25,6 @@ services:
   api:
     build: .
     environment:
-      # SOTA: Static pool sizing prevents connection churn under heavy load
       - DATABASE_URL=postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable&pool_max_conns=20&pool_min_conns=20
       - STRESS_TEST=true
     ports:

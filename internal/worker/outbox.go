@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -62,29 +63,7 @@ func (w *OutboxWorker) processBatch(ctx context.Context) int {
 	}
 	defer tx.Rollback(txCtx)
 
-	query := `
-		SELECT id, aggregate_id, event_type, payload
-		FROM outbox_events
-		FOR UPDATE SKIP LOCKED
-		LIMIT 100;
-	`
-	rows, err := tx.Query(txCtx, query)
-	if err != nil {
-		slog.ErrorContext(txCtx, "[CDC Worker] Failed to extract events", "error", err)
-		return 0
-	}
-
-	events := make([]outboxEvent, 0, 100)
-	for rows.Next() {
-		var e outboxEvent
-		if err := rows.Scan(&e.id, &e.aggregateID, &e.eventType, &e.payload); err != nil {
-			slog.ErrorContext(txCtx, "[CDC Worker] DB scan failed", "error", err)
-			rows.Close()
-			return 0
-		}
-		events = append(events, e)
-	}
-	rows.Close()
+	events := w.extractEvents(txCtx, tx)
 
 	if len(events) == 0 {
 		return 0
@@ -113,6 +92,33 @@ func (w *OutboxWorker) processBatch(ctx context.Context) int {
 // ================================================================================================
 // HELPER FUNCTIONS
 // ================================================================================================
+
+func (w *OutboxWorker) extractEvents(ctx context.Context, tx pgx.Tx) []outboxEvent {
+	query := `
+		SELECT id, aggregate_id, event_type, payload
+		FROM outbox_events
+		FOR UPDATE SKIP LOCKED
+		LIMIT 100;
+	`
+	rows, err := tx.Query(ctx, query)
+	if err != nil {
+		slog.ErrorContext(ctx, "[CDC Worker] Failed to extract events", "error", err)
+		return []outboxEvent{}
+	}
+
+	events := make([]outboxEvent, 0, 100)
+	for rows.Next() {
+		var e outboxEvent
+		if err := rows.Scan(&e.id, &e.aggregateID, &e.eventType, &e.payload); err != nil {
+			slog.ErrorContext(ctx, "[CDC Worker] DB scan failed", "error", err)
+			rows.Close()
+			return []outboxEvent{}
+		}
+		events = append(events, e)
+	}
+	rows.Close()
+	return events
+}
 
 func (w *OutboxWorker) publishEvents(ctx context.Context, events []outboxEvent) []int {
 	processedIDs := make([]int, 0, len(events))
