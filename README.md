@@ -1,38 +1,53 @@
 # Financial Ledger API (Go)
 
-A cloud-native RESTful API in Go simulating a financial ledger. Designed with a focus on LLD principles (SOLID, ACID, concurrency), low-latency, and fault-tolerance.
+A cloud-native REST API in Go simulating a high-throughput financial ledger. Designed to comply to industry-standard software engineering patterns, such as ACID-ity, data-race prevention, and separation of concerns.
 
-## Design and Patterns
+## Architecture & Design Decisions
 
-This project tackles common distributed systems challenges (double-spending, dual-write problem, rate limiting) using standard patterns:
+The system tackles typical distributed finance bottlenecks (double-spending, deadlocks, dual-writes) using standard patterns:
 
-* **Clean Architecture & Dependency Injection:** separation of concerns (Hexagonal Architecture / DDD principles). Delivery layers (HTTP Handlers), business logic (Domain Services), and persistence (Repositories) are fully decoupled via interfaces, enabling 100% mockability and enforcing SRP and DIP.
-* **ACID Transactions & Concurrency Control:** uses PostgreSQL row-level locks and atomic increments to prevent double-spending and race conditions and minimize I/O chatter.
-* **Transactional Outbox & Event-Driven Architecture:** an asynchronous Background Worker polls the outbox table to guarantee **At-Least-Once** dispatching to message brokers (e.g., Kafka/RabbitMQ, to be added), tackling the Dual-Write Problem.
-* **Self-Healing Mechanics:** other background workers ensure system resilience automatically (e.g. a cronjob rescues stuck messages, and a background eviction worker clears inactive IPs from the rate limiter).
-* **Idempotency:** idempotency keys are enforced at the database level to handle network retries atomically.
-* **Lock-Sharded GCRA Rate Limiter:** prevents resource exhaustion by using a `sync.Map` with per-IP mutexes (lock-sharding).
-* **Decorator Pattern:** Functionalities like cryptographic security  and observability are implemented as HTTP middlewares to keep the core domain intact.
-* **Observability & Telemetry:** implements a context-aware JSON logging strategy and a middleware to intercept and record RED (Rate, Errors, Duration) metrics (for future integration with Datadog/Grafana).
+- **Concurrency & ACID:** Utilizes PostgreSQL pessimistic row-level locks. Enforces a strict **Lock Hierarchy** (always locking the lowest Account ID first) to avoid deadlocks during concurrent cyclic transfers. Database operations are made via `pgx.Batch` to minimize I/O chatter.
+- **Double-Entry Bookkeeping:** Transfers generate delta records in an `entries` table, ensuring the ledger state is always verifiable.
+- **Change Data Capture:** Transactional Outbox pattern: domain events are atomically committed to `outbox_events`. A background worker polls the outbox with `FOR UPDATE SKIP LOCKED`, allowing horizontal scaling of the worker pool without double-processing.
+- **Idempotency:** Network anomalies and client retries are handled via `idempotency_keys` unique constraints, making duplicate API calls inherently safe at the database level.
+- **Middleware Pipeline:** 
+  1. **Observability:** Context-aware RED (Rate, Errors, Duration) metrics logging.
+  2. **Zero-Trust Auth:** Sender identity is extracted from JWT claims.
+  3. **Tenant-Isolation Rate Limiting:** Enforces quotas via `httprate` based on the authenticated user ID.
 
-## Stack
+## Tech Stack
 
-* **Language:** Go 1.22
-* **Datastore:** PostgreSQL 15
-* **Testing:** Testcontainers, k6, standard `testing` package (TDD & Race Detector).
-* **DevOps & CI/CD:** Multi-stage Dockerfile, `golangci-lint`, Makefile.
+- **Language:** Go 1.26
+- **Datastore:** PostgreSQL 15
+- **Testing:** `testcontainers-go` (integration), `k6` (load testing)
+- **CI/CD:** Multi-stage Scratch Dockerfile, GitHub Actions, `golangci-lint`
 
 ## Quick Start
 
-The project is fully containerized and includes a `Makefile` for rapid testing.
+### 1. Run the API
+
+Start the PostgreSQL database and the API server
+```bash
+docker compose up -d postgres api
+```
+
+### 2. Development & Testing
+The test suite utilizes Testcontainers to validate ACID properties against a real PostgreSQL instance.
 
 ```bash
-# Run the test suite (includes data-race detection)
+# Run unit and integration tests (with race detector)
 make test
 
-# Build and run the Docker image
-make docker-build
+# Run the linter
+make lint
 
-# Run the stress test (spawns a Postgres container, seeds data, and runs a k6 load test)
+# Calculate code coverage
+make coverage
+```
+
+### 3. Load & Stress Testing
+Executes an automated E2E pipeline: tears down infrastructure, generates seeded JWTs, sets up the DB/API, injects seed data, and runs a high-concurrency k6 stress test to validate lock mechanics.
+
+```bash
 make stress
 ```
