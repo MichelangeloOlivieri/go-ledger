@@ -35,12 +35,12 @@ jobs:
 
       - name: Download dependencies
         run: go mod download
-
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          args: --timeout=5m
+# project requires go 1.26, but github does not support it
+      # - name: golangci-lint
+      #   uses: golangci/golangci-lint-action@v6
+      #   with:
+      #     version: latest
+      #     args: --timeout=5m
 
       - name: Run Tests with Race Detector
         env:
