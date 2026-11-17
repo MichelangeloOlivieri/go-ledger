@@ -46,7 +46,11 @@ func main() {
 	if err != nil {
 		panic(fmt.Errorf("failed to create json file: %w", err))
 	}
-	defer jsonFile.Close()
+	defer func() {
+		if err := jsonFile.Close(); err != nil {
+			panic(fmt.Errorf("failed to close json file: %w", err))
+		}
+	}()
 
 	bufferedWriter := bufio.NewWriter(jsonFile)
 	if err := json.NewEncoder(bufferedWriter).Encode(users); err != nil {
@@ -60,7 +64,11 @@ func main() {
 	if err != nil {
 		panic(fmt.Errorf("failed to create sql file: %w", err))
 	}
-	defer sqlFile.Close()
+	defer func() {
+		if err := sqlFile.Close(); err != nil {
+			panic(fmt.Errorf("failed to close sql file: %w", err))
+		}
+	}()
 
 	sqlTemplate := `
 		INSERT INTO accounts (id, balance)

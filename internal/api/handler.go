@@ -49,7 +49,11 @@ func writeJSON(w http.ResponseWriter, status int, body []byte) {
 
 func (s *APIServer) HandleTransfer(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 10240)
-	defer r.Body.Close()
+	defer func() {
+		if err := r.Body.Close(); err != nil {
+			slog.Warn("Failed to close request body", "error", err)
+		}
+	}()
 
 	var req TransferRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

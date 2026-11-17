@@ -66,7 +66,11 @@ func (w *OutboxWorker) processBatch(ctx context.Context) int {
 		slog.ErrorContext(txCtx, "[CDC Worker] Failed to begin transaction", "error", err)
 		return 0
 	}
-	defer tx.Rollback(txCtx)
+	defer func() {
+		if err := tx.Rollback(txCtx); err != nil && err != pgx.ErrTxClosed {
+			slog.ErrorContext(txCtx, "[CDC Worker] Failed to rollback transaction", "error", err)
+		}
+	}()
 
 	events := w.extractEvents(txCtx, tx)
 
