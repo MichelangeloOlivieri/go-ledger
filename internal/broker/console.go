@@ -5,7 +5,7 @@ import (
 	"log/slog"
 )
 
-// for now the publisher simply logs the message to standard output, until a future message broker (e.g. notification service) is implemented
+// for the moment the publisher simply logs the message to standard output, until a future message broker (e.g. notification service) is implemented
 type ConsolePublisher struct{}
 
 func NewConsolePublisher() *ConsolePublisher {

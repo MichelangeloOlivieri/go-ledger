@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -129,8 +130,30 @@ func TestHandleTransfer(t *testing.T) {
 			server.HandleTransfer(rec, req)
 
 			if rec.Code != tt.expectedStatus {
-				t.Errorf("expected status %d; got %d", tt.expectedStatus, rec.Code)
+				t.Errorf("expected status %d; got %d, body: %s", tt.expectedStatus, rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+func BenchmarkHandleTransfer(b *testing.B) {
+	server := NewAPIServer(&mockWallet{err: nil})
+	payload := []byte(`{"to_account_id": 2, "amount": 50}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/transfer", nil)
+	req.Header.Set("Idempotency-Key", "bench-key")
+
+	ctx := context.WithValue(req.Context(), userIDKey, "1")
+	req = req.WithContext(ctx)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for b.Loop() {
+		req.Body = http.NoBody
+		req.Body = io.NopCloser(bytes.NewReader(payload))
+		rec := httptest.NewRecorder()
+
+		server.HandleTransfer(rec, req)
 	}
 }

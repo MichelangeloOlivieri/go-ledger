@@ -4,22 +4,29 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/exaring/otelpgx"
 	"github.com/go-chi/jwtauth/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"ledger/internal/api"
 	"ledger/internal/broker"
+	"ledger/internal/telemetry"
 	"ledger/internal/wallet"
 	"ledger/internal/worker"
 )
 
 func main() {
+	go func() {
+		_ = http.ListenAndServe("localhost:6060", nil)
+	}()
+
 	dbUrl := os.Getenv("DATABASE_URL")
 	if dbUrl == "" {
 		dbUrl = "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
@@ -32,6 +39,13 @@ func main() {
 
 	ctx := context.Background()
 
+	tp, err := telemetry.InitTracer(ctx, "ledger-monolith")
+	if err != nil {
+		slog.Error("Failed to initialize OTel", "error", err)
+	} else if tp != nil {
+		defer func() { _ = tp.Shutdown(ctx) }()
+	}
+
 	// API pool
 	apiCfg, err := pgxpool.ParseConfig(dbUrl)
 	if err != nil {
@@ -39,6 +53,7 @@ func main() {
 		os.Exit(1)
 	}
 	apiCfg.MaxConns = 80
+	apiCfg.ConnConfig.Tracer = otelpgx.NewTracer()
 
 	apiPool, err := pgxpool.NewWithConfig(ctx, apiCfg)
 	if err != nil {
@@ -50,6 +65,7 @@ func main() {
 	// worker pool
 	workerCfg, _ := pgxpool.ParseConfig(dbUrl)
 	workerCfg.MaxConns = 20
+	workerCfg.ConnConfig.Tracer = otelpgx.NewTracer()
 
 	workerPool, err := pgxpool.NewWithConfig(ctx, workerCfg)
 	if err != nil {

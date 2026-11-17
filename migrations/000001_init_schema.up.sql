@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS entries (
 CREATE INDEX IF NOT EXISTS idx_entries_account_id ON entries(account_id);
 CREATE INDEX IF NOT EXISTS idx_entries_idempotency_key ON entries(idempotency_key);
 
-CREATE TABLE IF NOT EXISTS outbox_events (
+CREATE TABLE IF NOT EXISTS events (
     id BIGSERIAL PRIMARY KEY, 
     aggregate_id TEXT NOT NULL,
     event_type TEXT NOT NULL,
@@ -28,4 +28,4 @@ CREATE TABLE IF NOT EXISTS outbox_events (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_outbox_aggregate ON outbox_events(aggregate_id);
+CREATE INDEX IF NOT EXISTS idx_outbox_aggregate ON events(aggregate_id);

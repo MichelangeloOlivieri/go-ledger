@@ -70,7 +70,7 @@ func runMain(m *testing.M) int {
 // validates under concurrency: concurrency (no data-races), Lock Hierarchy (no deadlocks) and check invariants from accounts and entry tables
 func TestWalletService_ACID_Transfers(t *testing.T) {
 	ctx := context.Background()
-	_, _ = globalPool.Exec(ctx, "TRUNCATE TABLE accounts, idempotency_keys, entries, outbox_events CASCADE;")
+	_, _ = globalPool.Exec(ctx, "TRUNCATE TABLE accounts, idempotency_keys, entries, events CASCADE;")
 
 	for i := 1; i <= 5; i++ {
 		_, err := globalPool.Exec(ctx, "INSERT INTO accounts (id, balance) VALUES ($1, 1000);", i)
@@ -125,10 +125,10 @@ func TestWalletService_ACID_Transfers(t *testing.T) {
 	}
 }
 
-// validates idempotency across: accounts, entries, outbox_events
+// validates idempotency across: accounts, entries, events
 func TestWalletService_Idempotency(t *testing.T) {
 	ctx := context.Background()
-	_, _ = globalPool.Exec(ctx, "TRUNCATE TABLE accounts, idempotency_keys, entries, outbox_events CASCADE;")
+	_, _ = globalPool.Exec(ctx, "TRUNCATE TABLE accounts, idempotency_keys, entries, events CASCADE;")
 	_, _ = globalPool.Exec(ctx, "INSERT INTO accounts (id, balance) VALUES (1, 1000), (2, 1000);")
 
 	svc := NewWalletService(globalPool)
@@ -161,7 +161,7 @@ func TestWalletService_Idempotency(t *testing.T) {
 	}
 
 	var outboxCount int
-	_ = globalPool.QueryRow(ctx, "SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = $1", idemKey).Scan(&outboxCount)
+	_ = globalPool.QueryRow(ctx, "SELECT COUNT(*) FROM events WHERE aggregate_id = $1", idemKey).Scan(&outboxCount)
 	if outboxCount != 1 {
 		t.Fatalf("idempotency violation on outbox: expected 1 event, got %d", outboxCount)
 	}

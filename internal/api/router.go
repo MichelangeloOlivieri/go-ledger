@@ -3,33 +3,18 @@ package api
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 	"os"
 	"time"
 
 	"github.com/go-chi/httprate"
 	"github.com/go-chi/jwtauth/v5"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type contextKey string
 
 const userIDKey contextKey = "user_id"
-
-// minimalist observability middleware
-func timingMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		next.ServeHTTP(w, r)
-		duration := time.Since(start)
-
-		slog.Info("Request completed",
-			"path", r.URL.Path,
-			"method", r.Method,
-			"duration_ms", duration.Milliseconds(),
-		)
-	})
-}
 
 func userIDContext(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -77,9 +62,9 @@ func NewRouter(api *APIServer, tokenAuth *jwtauth.JWTAuth) *http.ServeMux {
 	// token validator
 	securedHandler := jwtauth.Verifier(tokenAuth)(awareHandler)
 
-	// observability
-	monitoredHandler := timingMiddleware(securedHandler)
+	// observability strictly delegated to OpenTelemetry
+	otelHandler := otelhttp.NewHandler(securedHandler, "POST /transfer")
 
-	mux.Handle("POST /transfer", monitoredHandler)
+	mux.Handle("POST /transfer", otelHandler)
 	return mux
 }

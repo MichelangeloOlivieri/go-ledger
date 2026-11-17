@@ -47,17 +47,17 @@ func (w *WalletService) Transfer(ctx context.Context, fromID, toID int64, amount
 
 	// 2. Lock Ordering
 	firstID, secondID := fromID, toID
-	isFirstSender := true
+	senderFirst := true
 	if fromID > toID {
 		firstID, secondID = toID, fromID
-		isFirstSender = false
+		senderFirst = false
 	}
 
 	// 3. Batch Construction
 	batch := &pgx.Batch{}
 
-	// lock ordering
-	if isFirstSender {
+	// locks are in the db!
+	if senderFirst {
 		batch.Queue(`UPDATE accounts SET balance = balance - $1 WHERE id = $2`, amount, firstID)
 		batch.Queue(`UPDATE accounts SET balance = balance + $1 WHERE id = $2`, amount, secondID)
 	} else {
@@ -71,7 +71,7 @@ func (w *WalletService) Transfer(ctx context.Context, fromID, toID int64, amount
 
 	// Transactional Outbox
 	outboxPayload := fmt.Sprintf(`{"from": %d, "to": %d, "amount": %d}`, fromID, toID, amount)
-	batch.Queue(`INSERT INTO outbox_events (aggregate_id, event_type, payload) VALUES ($1, 'TRANSFER_COMPLETED', $2)`, idempotencyKey, outboxPayload)
+	batch.Queue(`INSERT INTO events (aggregate_id, event_type, payload) VALUES ($1, 'TRANSFER_COMPLETED', $2)`, idempotencyKey, outboxPayload)
 
 	// 4. Atomic Execution
 	br := tx.SendBatch(ctx, batch)

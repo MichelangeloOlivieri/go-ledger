@@ -2,12 +2,13 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
+
+	"encoding/json"
 
 	"ledger/internal/wallet"
 )

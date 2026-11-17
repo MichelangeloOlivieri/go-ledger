@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel"
 )
 
 type EventPublisher interface {
@@ -53,7 +54,11 @@ type outboxEvent struct {
 }
 
 func (w *OutboxWorker) processBatch(ctx context.Context) int {
-	txCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	tracer := otel.Tracer("outbox-worker")
+	txCtx, span := tracer.Start(ctx, "ProcessOutboxBatch")
+	defer span.End()
+
+	txCtx, cancel := context.WithTimeout(txCtx, 10*time.Second)
 	defer cancel()
 
 	tx, err := w.db.Begin(txCtx)
@@ -69,13 +74,14 @@ func (w *OutboxWorker) processBatch(ctx context.Context) int {
 		return 0
 	}
 
+	// at least once delivery
 	processedIDs := w.publishEvents(txCtx, events)
 
 	if len(processedIDs) == 0 {
 		return 0
 	}
 
-	_, err = tx.Exec(txCtx, `DELETE FROM outbox_events WHERE id = ANY($1)`, processedIDs)
+	_, err = tx.Exec(txCtx, `DELETE FROM events WHERE id = ANY($1)`, processedIDs)
 	if err != nil {
 		slog.ErrorContext(txCtx, "[CDC Worker] Failed to delete processed events", "error", err)
 		return 0
@@ -96,7 +102,7 @@ func (w *OutboxWorker) processBatch(ctx context.Context) int {
 func (w *OutboxWorker) extractEvents(ctx context.Context, tx pgx.Tx) []outboxEvent {
 	query := `
 		SELECT id, aggregate_id, event_type, payload
-		FROM outbox_events
+		FROM events
 		FOR UPDATE SKIP LOCKED
 		LIMIT 100;
 	`

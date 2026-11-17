@@ -98,10 +98,10 @@ func (m *MockBus) GetEvents() []string {
 // validates standard workflow (processBatch): extract, isolate (IN_FLIGHT), publish, and delete
 func TestOutboxWorker_Baseline(t *testing.T) {
 	ctx := context.Background()
-	_, _ = globalPool.Exec(ctx, "TRUNCATE TABLE outbox_events CASCADE;")
+	_, _ = globalPool.Exec(ctx, "TRUNCATE TABLE events CASCADE;")
 
 	insertQuery := `
-		INSERT INTO outbox_events (aggregate_id, event_type, payload) VALUES
+		INSERT INTO events (aggregate_id, event_type, payload) VALUES
 			('agg-1', 'created', '{"data": "event 1"}'),
 			('agg-2', 'updated', '{"data": "event 2"}'),
 			('agg-3', 'deleted', '{"data": "event 3"}');
@@ -141,7 +141,7 @@ func TestOutboxWorker_Baseline(t *testing.T) {
 	}
 
 	var remainingCount int
-	if err := globalPool.QueryRow(ctx, `SELECT COUNT(*) FROM outbox_events;`).Scan(&remainingCount); err != nil {
+	if err := globalPool.QueryRow(ctx, `SELECT COUNT(*) FROM events;`).Scan(&remainingCount); err != nil {
 		t.Fatalf("count query failed: %v", err)
 	}
 
@@ -153,10 +153,10 @@ func TestOutboxWorker_Baseline(t *testing.T) {
 // validates absence of double processing or deadlocks in db reading
 func TestOutboxWorker_ConcurrentSkipLocked(t *testing.T) {
 	ctx := context.Background()
-	_, _ = globalPool.Exec(ctx, "TRUNCATE TABLE outbox_events CASCADE;")
+	_, _ = globalPool.Exec(ctx, "TRUNCATE TABLE events CASCADE;")
 
 	insertQuery := `
-		INSERT INTO outbox_events (aggregate_id, event_type, payload)
+		INSERT INTO events (aggregate_id, event_type, payload)
 		SELECT floor(random() * 1000)::TEXT, 'event', '{"data": "mock"}'::jsonb
 		FROM generate_series(1, 100);
 	`
@@ -184,7 +184,7 @@ func TestOutboxWorker_ConcurrentSkipLocked(t *testing.T) {
 	}
 
 	var remainingCount int
-	if err := globalPool.QueryRow(ctx, `SELECT COUNT(*) FROM outbox_events;`).Scan(&remainingCount); err != nil {
+	if err := globalPool.QueryRow(ctx, `SELECT COUNT(*) FROM events;`).Scan(&remainingCount); err != nil {
 		t.Fatalf("count query failed: %v", err)
 	}
 
@@ -196,10 +196,10 @@ func TestOutboxWorker_ConcurrentSkipLocked(t *testing.T) {
 // measures performance under heavy concurrent load
 func BenchmarkOutboxWorker_SkipLocked(b *testing.B) {
 	ctx := context.Background()
-	_, _ = globalPool.Exec(ctx, "TRUNCATE TABLE outbox_events CASCADE;")
+	_, _ = globalPool.Exec(ctx, "TRUNCATE TABLE events CASCADE;")
 
 	insertQuery := `
-		INSERT INTO outbox_events (aggregate_id, event_type, payload)
+		INSERT INTO events (aggregate_id, event_type, payload)
 		SELECT floor(random() * 1000)::TEXT, 'benchmark', '{"data": "bench"}'::jsonb
 		FROM generate_series(1, 100000);
 	`

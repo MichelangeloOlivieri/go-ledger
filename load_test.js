@@ -21,7 +21,8 @@ export const options = {
 };
 
 export default function () {
-    const url = 'http://api:8000/transfer';
+    const url = 'http://host.docker.internal:8000/transfer';
+    // const url = 'http://api:8000/transfer';
     const sender = users[Math.floor(Math.random() * users.length)];
 
     let toId;
