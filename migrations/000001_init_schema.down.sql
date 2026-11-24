@@ -1,4 +1,5 @@
 DROP TABLE IF EXISTS entries;
 DROP TABLE IF EXISTS events;
 DROP TABLE IF EXISTS idempotency_keys;
+DROP TABLE IF EXISTS transfers;
 DROP TABLE IF EXISTS accounts;

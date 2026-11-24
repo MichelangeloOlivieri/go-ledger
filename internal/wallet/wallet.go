@@ -4,15 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-)
-
-var (
-	ErrInsufficientFunds = errors.New("insufficient_funds")
-	ErrAccountNotFound   = errors.New("account_not_found")
 )
 
 type WalletService struct {
@@ -23,9 +19,14 @@ func NewWalletService(db *pgxpool.Pool) *WalletService {
 	return &WalletService{db: db}
 }
 
+var (
+	ErrInsufficientFunds = errors.New("insufficient_funds")
+	ErrAccountNotFound   = errors.New("account_not_found")
+)
+
 // implements transfer logic (Pessimistic Lock) with Lock Hierarchy, Double-Entry Bookkeeping, and Transactional Outbox
-func (w *WalletService) Transfer(ctx context.Context, fromID, toID int64, amount int64, idempotencyKey string) error {
-	if fromID == toID {
+func (w *WalletService) Transfer(ctx context.Context, fromId int64, toId int64, amount int64, idempotencyKey string) error {
+	if fromId == toId {
 		return fmt.Errorf("self-transfer not allowed")
 	}
 
@@ -36,8 +37,8 @@ func (w *WalletService) Transfer(ctx context.Context, fromID, toID int64, amount
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// 1. Idempotency Check
-	idempotencyQuery := `INSERT INTO idempotency_keys (key) VALUES ($1) ON CONFLICT (key) DO NOTHING;`
-	tag, err := tx.Exec(ctx, idempotencyQuery, idempotencyKey)
+	idempotencyQuery := `INSERT INTO idempotency_keys (account_id, key) VALUES ($1, $2) ON CONFLICT (account_id, key) DO NOTHING;`
+	tag, err := tx.Exec(ctx, idempotencyQuery, fromId, idempotencyKey)
 	if err != nil {
 		return fmt.Errorf("idempotency claim error: %w", err)
 	}
@@ -45,18 +46,24 @@ func (w *WalletService) Transfer(ctx context.Context, fromID, toID int64, amount
 		return nil
 	}
 
+	var transferID int64
+	insertTransferID := `INSERT INTO transfers DEFAULT VALUES RETURNING id;`
+	if err := tx.QueryRow(ctx, insertTransferID).Scan(&transferID); err != nil {
+		return fmt.Errorf("could not insert transfer_id: %w", err)
+	}
+
 	// 2. Lock Ordering
-	firstID, secondID := fromID, toID
+	firstID, secondID := fromId, toId
 	senderFirst := true
-	if fromID > toID {
-		firstID, secondID = toID, fromID
+	if fromId > toId {
+		firstID, secondID = toId, fromId
 		senderFirst = false
 	}
 
 	// 3. Batch Construction
 	batch := &pgx.Batch{}
 
-	// locks are in the db!
+	// accounts
 	if senderFirst {
 		batch.Queue(`UPDATE accounts SET balance = balance - $1 WHERE id = $2`, amount, firstID)
 		batch.Queue(`UPDATE accounts SET balance = balance + $1 WHERE id = $2`, amount, secondID)
@@ -65,27 +72,28 @@ func (w *WalletService) Transfer(ctx context.Context, fromID, toID int64, amount
 		batch.Queue(`UPDATE accounts SET balance = balance - $1 WHERE id = $2`, amount, secondID)
 	}
 
-	// Double-Entry Bookkeeping
-	batch.Queue(`INSERT INTO entries (idempotency_key, account_id, amount) VALUES ($1, $2, $3)`, idempotencyKey, fromID, -amount)
-	batch.Queue(`INSERT INTO entries (idempotency_key, account_id, amount) VALUES ($1, $2, $3)`, idempotencyKey, toID, amount)
+	// entries
+	batch.Queue(`INSERT INTO entries (transfer_id, account_id, amount) VALUES ($1, $2, $3)`, transferID, fromId, -amount)
+	batch.Queue(`INSERT INTO entries (transfer_id, account_id, amount) VALUES ($1, $2, $3)`, transferID, toId, amount)
 
-	// Transactional Outbox
-	outboxPayload := fmt.Sprintf(`{"from": %d, "to": %d, "amount": %d}`, fromID, toID, amount)
-	batch.Queue(`INSERT INTO events (aggregate_id, event_type, payload) VALUES ($1, 'TRANSFER_COMPLETED', $2)`, idempotencyKey, outboxPayload)
+	// events
+	outboxPayload := fmt.Sprintf(`{"from": %d, "to": %d, "amount": %d}`, fromId, toId, amount)
+	batch.Queue(`INSERT INTO events (aggregate_id, event_type, payload) VALUES ($1, 'TRANSFER_COMPLETED', $2)`, strconv.FormatInt(transferID, 10), outboxPayload)
 
-	// 4. Atomic Execution
+	// 4. Execution
 	br := tx.SendBatch(ctx, batch)
 
-	// execute the two updates
-	for i := 0; i < 2; i++ {
+	// first two updates
+	for range 2 {
 		tag, err := br.Exec()
 		if err != nil {
 			_ = br.Close()
+			// postgres code for insufficient funds
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23514" {
 				return ErrInsufficientFunds
 			}
-			return fmt.Errorf("account update failed: %w", err)
+			return fmt.Errorf("update into accounts table failed: %w", err)
 		}
 		if tag.RowsAffected() == 0 {
 			_ = br.Close()
@@ -93,11 +101,11 @@ func (w *WalletService) Transfer(ctx context.Context, fromID, toID int64, amount
 		}
 	}
 
-	// execute the three inserts
-	for i := 0; i < 3; i++ {
+	// last three inserts
+	for range 3 {
 		if _, err := br.Exec(); err != nil {
 			_ = br.Close()
-			return fmt.Errorf("audit/outbox insert failed: %w", err)
+			return fmt.Errorf("insert failed (either entries or outbox table): %w", err)
 		}
 	}
 

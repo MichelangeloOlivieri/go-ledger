@@ -1,1 +1,1 @@
-TRUNCATE TABLE accounts, idempotency_keys, entries, events CASCADE;
+TRUNCATE TABLE accounts, idempotency_keys, transfers, entries, events CASCADE;

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +23,7 @@ import (
 
 var globalPool *pgxpool.Pool
 
+// setup of the test infrastructure
 func TestMain(m *testing.M) {
 	os.Exit(runMain(m))
 }
@@ -70,7 +72,7 @@ func runMain(m *testing.M) int {
 // validates under concurrency: concurrency (no data-races), Lock Hierarchy (no deadlocks) and check invariants from accounts and entry tables
 func TestWalletService_ACID_Transfers(t *testing.T) {
 	ctx := context.Background()
-	_, _ = globalPool.Exec(ctx, "TRUNCATE TABLE accounts, idempotency_keys, entries, events CASCADE;")
+	_, _ = globalPool.Exec(ctx, "TRUNCATE TABLE accounts, idempotency_keys, transfers, entries, events CASCADE;")
 
 	for i := 1; i <= 5; i++ {
 		_, err := globalPool.Exec(ctx, "INSERT INTO accounts (id, balance) VALUES ($1, 1000);", i)
@@ -84,7 +86,7 @@ func TestWalletService_ACID_Transfers(t *testing.T) {
 	workers := 2000
 	errChan := make(chan error, workers)
 
-	for i := 0; i < workers; i++ {
+	for i := range workers {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
@@ -128,14 +130,14 @@ func TestWalletService_ACID_Transfers(t *testing.T) {
 // validates idempotency across: accounts, entries, events
 func TestWalletService_Idempotency(t *testing.T) {
 	ctx := context.Background()
-	_, _ = globalPool.Exec(ctx, "TRUNCATE TABLE accounts, idempotency_keys, entries, events CASCADE;")
+	_, _ = globalPool.Exec(ctx, "TRUNCATE TABLE accounts, idempotency_keys, transfers, entries, events CASCADE;")
 	_, _ = globalPool.Exec(ctx, "INSERT INTO accounts (id, balance) VALUES (1, 1000), (2, 1000);")
 
 	svc := NewWalletService(globalPool)
 	var wg sync.WaitGroup
 	idemKey := "same-idempotency-key"
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -154,14 +156,17 @@ func TestWalletService_Idempotency(t *testing.T) {
 		t.Fatalf("idempotency violation on accounts: first_balance=%d, second_balance=%d", balance1, balance2)
 	}
 
+	var transferID int64
+	_ = globalPool.QueryRow(ctx, "SELECT id FROM transfers;").Scan(&transferID)
+
 	var entryCount int
-	_ = globalPool.QueryRow(ctx, "SELECT COUNT(*) FROM entries WHERE idempotency_key = $1", idemKey).Scan(&entryCount)
+	_ = globalPool.QueryRow(ctx, "SELECT COUNT(*) FROM entries WHERE transfer_id = $1", transferID).Scan(&entryCount)
 	if entryCount != 2 {
 		t.Fatalf("idempotency violation on ledger: expected 2 entries, got %d", entryCount)
 	}
 
 	var outboxCount int
-	_ = globalPool.QueryRow(ctx, "SELECT COUNT(*) FROM events WHERE aggregate_id = $1", idemKey).Scan(&outboxCount)
+	_ = globalPool.QueryRow(ctx, "SELECT COUNT(*) FROM events WHERE aggregate_id = $1", strconv.FormatInt(transferID, 10)).Scan(&outboxCount)
 	if outboxCount != 1 {
 		t.Fatalf("idempotency violation on outbox: expected 1 event, got %d", outboxCount)
 	}
