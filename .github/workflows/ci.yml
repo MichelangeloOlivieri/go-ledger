@@ -44,8 +44,8 @@ jobs:
 
       - name: Run Tests with Race Detector
         env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
-        run: go test -v -race ./...
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: go test -v -race -p 1 ./...
 
       - name: Verify Build
         run: go build -trimpath -ldflags="-s -w" -o ledger-api cmd/ledger/main.go
