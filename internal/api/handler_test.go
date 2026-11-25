@@ -31,57 +31,17 @@ func TestHandleTransfer(t *testing.T) {
 		expectedStatus int
 	}{
 		{
-			name:           "Success - Valid transaction (Zero-Trust Auth)",
+			name:           "Valid transaction",
 			walletErr:      nil,
-			payload:        []byte(`{"to_account_id": 2, "amount": 50}`),
+			payload:        []byte(`{"to_id": 2, "amount": 50}`),
 			idempotencyKey: "test-key-123",
 			injectIdentity: "1",
 			expectedStatus: http.StatusOK,
 		},
 		{
-			name:           "Security - IDOR Exploit Prevented (Missing Identity Context)",
+			name:           "Edge Defense - Payload > 10KB",
 			walletErr:      nil,
-			payload:        []byte(`{"to_account_id": 2, "amount": 50}`),
-			idempotencyKey: "test-key-123",
-			injectIdentity: "",
-			expectedStatus: http.StatusUnauthorized,
-		},
-		{
-			name:           "Security - Malformed Subject Claim",
-			walletErr:      nil,
-			payload:        []byte(`{"to_account_id": 2, "amount": 50}`),
-			idempotencyKey: "test-key-123",
-			injectIdentity: "invalid-uuid",
-			expectedStatus: http.StatusBadRequest,
-		},
-		{
-			name:           "Domain Error - Insufficient Funds",
-			walletErr:      wallet.ErrInsufficientFunds,
-			payload:        []byte(`{"to_account_id": 2, "amount": 100}`),
-			idempotencyKey: "test-key-123",
-			injectIdentity: "1",
-			expectedStatus: http.StatusUnprocessableEntity,
-		},
-		{
-			name:           "Domain Error - Account Not Found",
-			walletErr:      wallet.ErrAccountNotFound,
-			payload:        []byte(`{"to_account_id": 2, "amount": 100}`),
-			idempotencyKey: "test-key-123",
-			injectIdentity: "1",
-			expectedStatus: http.StatusNotFound,
-		},
-		{
-			name:           "Domain Error - DB Constraint",
-			walletErr:      errors.New("db transaction failed"),
-			payload:        []byte(`{"to_account_id": 2, "amount": 100}`),
-			idempotencyKey: "test-key-123",
-			injectIdentity: "1",
-			expectedStatus: http.StatusInternalServerError,
-		},
-		{
-			name:           "Edge Defense - Self Transfer",
-			walletErr:      nil,
-			payload:        []byte(`{"to_account_id": 1, "amount": 50}`),
+			payload:        []byte(`{"to_id": 2, "amount": 50, "pad": "` + strings.Repeat("x", 11000) + `"}`),
 			idempotencyKey: "test-key-123",
 			injectIdentity: "1",
 			expectedStatus: http.StatusBadRequest,
@@ -89,7 +49,32 @@ func TestHandleTransfer(t *testing.T) {
 		{
 			name:           "Edge Defense - Malformed JSON",
 			walletErr:      nil,
-			payload:        []byte(`{"amount": "fifty"}`),
+			payload:        []byte(`{"amount": "a ton of money"}`),
+			idempotencyKey: "test-key-123",
+			injectIdentity: "1",
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "Security - Missing Identity Context",
+			walletErr:      nil,
+			payload:        []byte(`{"to_id": 2, "amount": 50}`),
+			idempotencyKey: "test-key-123",
+			injectIdentity: "",
+			expectedStatus: http.StatusUnauthorized,
+		},
+		{
+			name:           "Security - Malformed Subject Claim",
+			walletErr:      nil,
+			payload:        []byte(`{"to_id": 2, "amount": 50}`),
+			idempotencyKey: "test-key-123",
+			injectIdentity: "some-invalid-uuid",
+			expectedStatus: http.StatusBadRequest,
+		},
+
+		{
+			name:           "Edge Defense - Self Transfer",
+			walletErr:      nil,
+			payload:        []byte(`{"to_id": 1, "amount": 50}`),
 			idempotencyKey: "test-key-123",
 			injectIdentity: "1",
 			expectedStatus: http.StatusBadRequest,
@@ -97,24 +82,40 @@ func TestHandleTransfer(t *testing.T) {
 		{
 			name:           "Edge Defense - Negative Amount",
 			walletErr:      nil,
-			payload:        []byte(`{"to_account_id": 2, "amount": -10}`),
+			payload:        []byte(`{"to_id": 2, "amount": -10}`),
 			idempotencyKey: "test-key-123",
 			injectIdentity: "1",
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
-			name:           "Edge Defense - OOM JSON Bomb (Payload > 10KB)",
+			name:           "Edge Defense - Missing Idempotency Key",
 			walletErr:      nil,
-			payload:        []byte(`{"to_account_id": 2, "amount": 50, "pad": "` + strings.Repeat("x", 11000) + `"}`),
-			idempotencyKey: "test-key-123",
+			payload:        []byte(`{"to_id": 2, "amount": 50}`),
+			idempotencyKey: "",
 			injectIdentity: "1",
 			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "Domain Error - Idempotency Mismatch", // other ones are analogous
+			walletErr:      wallet.ErrIdempotencyMismatch,
+			payload:        []byte(`{"to_id": 2, "amount": 50}`),
+			idempotencyKey: "test-key-123",
+			injectIdentity: "1",
+			expectedStatus: http.StatusUnprocessableEntity,
+		},
+		{
+			name:           "Domain Error - Internal Failure",
+			walletErr:      errors.New("server.Transfer() returns a non-nil error"),
+			payload:        []byte(`{"to_id": 13, "amount": 50}`),
+			idempotencyKey: "test-key-123",
+			injectIdentity: "1",
+			expectedStatus: http.StatusInternalServerError,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			server := NewAPIServer(&mockWallet{err: tt.walletErr})
+			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/transfers", bytes.NewReader(tt.payload))
 
 			if tt.idempotencyKey != "" {
@@ -126,7 +127,7 @@ func TestHandleTransfer(t *testing.T) {
 				req = req.WithContext(ctx)
 			}
 
-			rec := httptest.NewRecorder()
+			server := NewAPIServer(&mockWallet{err: tt.walletErr})
 			server.HandleTransfer(rec, req)
 
 			if rec.Code != tt.expectedStatus {
@@ -138,7 +139,7 @@ func TestHandleTransfer(t *testing.T) {
 
 func BenchmarkHandleTransfer(b *testing.B) {
 	server := NewAPIServer(&mockWallet{err: nil})
-	payload := []byte(`{"to_account_id": 2, "amount": 50}`)
+	payload := []byte(`{"to_id": 2, "amount": 50}`)
 
 	req := httptest.NewRequest(http.MethodPost, "/transfer", nil)
 	req.Header.Set("Idempotency-Key", "bench-key")

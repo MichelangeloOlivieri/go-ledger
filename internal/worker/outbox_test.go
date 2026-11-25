@@ -18,10 +18,13 @@ import (
 
 var globalPool *pgxpool.Pool
 
+// 1. Setup of the test infrastructure
+
 func TestMain(m *testing.M) {
 	os.Exit(runMain(m))
 }
 
+// spins up a real ephemeral postgres container with testcontainers (enabling real PostgreSQL logic)
 func runMain(m *testing.M) int {
 	ctx := context.Background()
 
@@ -64,7 +67,7 @@ func runMain(m *testing.M) int {
 	return m.Run()
 }
 
-// ephemeral in-memory mock
+// in-memory mock
 type MockBus struct {
 	mu     sync.Mutex
 	events []string
@@ -77,6 +80,7 @@ func NewMockBus() *MockBus {
 }
 
 func (m *MockBus) Publish(ctx context.Context, aggregateID string, eventType string, payload string) error {
+	// needs to be thread-safe for w.publishEvents() to work
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -110,15 +114,15 @@ func TestOutboxWorker_Baseline(t *testing.T) {
 		t.Fatalf("setup failed: %v", err)
 	}
 
-	pub := NewMockBus()
-	w := NewOutboxWorker(globalPool, pub)
+	mockPublisher := NewMockBus()
+	w := NewOutboxWorker(globalPool, mockPublisher)
 
 	processedCount := w.processBatch(ctx)
 	if processedCount != 3 {
 		t.Fatalf("expected 3 processed events, got %d", processedCount)
 	}
 
-	events := pub.GetEvents()
+	events := mockPublisher.GetEvents()
 	if len(events) != 3 {
 		t.Fatalf("expected exactly 3 events published, got: %d", len(events))
 	}
@@ -146,7 +150,7 @@ func TestOutboxWorker_Baseline(t *testing.T) {
 	}
 
 	if remainingCount != 0 {
-		t.Fatalf("state leak: expected 0 remaining events, got %d", remainingCount)
+		t.Fatalf("expected 0 remaining in events table, got %d", remainingCount)
 	}
 }
 
@@ -164,8 +168,8 @@ func TestOutboxWorker_ConcurrentSkipLocked(t *testing.T) {
 		t.Fatalf("setup failed: %v", err)
 	}
 
-	pub := NewMockBus()
-	w := NewOutboxWorker(globalPool, pub)
+	mockPublisher := NewMockBus()
+	w := NewOutboxWorker(globalPool, mockPublisher)
 	var wg sync.WaitGroup
 
 	// multiple simultaneous workers try to read the same batch
@@ -178,9 +182,9 @@ func TestOutboxWorker_ConcurrentSkipLocked(t *testing.T) {
 	}
 	wg.Wait()
 
-	events := pub.GetEvents()
+	events := mockPublisher.GetEvents()
 	if len(events) != 100 {
-		t.Fatalf("concurrency failure: expected exactly 100 published events, got %d", len(events))
+		t.Fatalf("expected exactly 100 published events, got %d", len(events))
 	}
 
 	var remainingCount int
@@ -189,7 +193,7 @@ func TestOutboxWorker_ConcurrentSkipLocked(t *testing.T) {
 	}
 
 	if remainingCount != 0 {
-		t.Fatalf("concurrency leak: expected 0 remaining rows, got %d", remainingCount)
+		t.Fatalf("expected 0 remaining rows, got %d", remainingCount)
 	}
 }
 
@@ -207,8 +211,8 @@ func BenchmarkOutboxWorker_SkipLocked(b *testing.B) {
 		b.Fatalf("setup failed: %v", err)
 	}
 
-	pub := NewMockBus()
-	w := NewOutboxWorker(globalPool, pub)
+	publisher := NewMockBus()
+	w := NewOutboxWorker(globalPool, publisher)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {

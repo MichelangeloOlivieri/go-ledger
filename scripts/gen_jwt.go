@@ -25,6 +25,7 @@ func main() {
 	secretKey := []byte(Secret)
 
 	for i := 1; i <= NumUsers; i++ {
+		// creates JWT token with HS256 and the server's secret key
 		claims := jwt.MapClaims{
 			"sub":   fmt.Sprintf("%d", i),
 			"admin": true,
@@ -36,12 +37,14 @@ func main() {
 			panic(err)
 		}
 
+		// appends user with generated token
 		users = append(users, SeedUser{
 			ID:    i,
 			Token: "Bearer " + signed,
 		})
 	}
 
+	// generates seed_users.json file at the root level
 	jsonFile, err := os.Create("seed_users.json")
 	if err != nil {
 		panic(fmt.Errorf("failed to create json file: %w", err))
@@ -60,6 +63,7 @@ func main() {
 		panic(fmt.Errorf("failed to flush json buffer: %w", err))
 	}
 
+	// generates scripts/seed.sql
 	sqlFile, err := os.Create("scripts/seed.sql")
 	if err != nil {
 		panic(fmt.Errorf("failed to create sql file: %w", err))
@@ -70,14 +74,13 @@ func main() {
 		}
 	}()
 
-	sqlTemplate := `
-		INSERT INTO accounts (id, balance)
-		SELECT generate_series(1, %[1]d), 1000000000000
-		ON CONFLICT (id) DO NOTHING;
+	sqlTemplate := `INSERT INTO accounts (id, balance)
+SELECT generate_series(1, %[1]d), 1000000000000
+ON CONFLICT (id) DO NOTHING;
 
-		-- aligns postgres sequence with manually inserted ids to prevent insert collisions
-		SELECT setval('accounts_id_seq', (SELECT MAX(id) FROM accounts));
-	`
+-- aligns postgres "row pointer" with manually inserted ids to prevent insert collisions
+SELECT setval('accounts_id_seq', (SELECT MAX(id) FROM accounts));
+`
 	if _, err := fmt.Fprintf(sqlFile, sqlTemplate, NumUsers); err != nil {
 		panic(fmt.Errorf("failed to write sql file: %w", err))
 	}

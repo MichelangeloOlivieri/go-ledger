@@ -5,9 +5,11 @@ CREATE TABLE accounts (
 );
 
 CREATE TABLE idempotency_keys (
-    account_id BIGINT NOT NULL,
+    from_id BIGINT NOT NULL,
+    to_id BIGINT NOT NULL,
+    amount BIGINT NOT NULL,
     key TEXT NOT NULL,
-    PRIMARY KEY (account_id, key),
+    PRIMARY KEY (from_id, key),
     CONSTRAINT idempotency_key_length CHECK (length(key) BETWEEN 1 AND 128)
 );
 

@@ -20,25 +20,27 @@ export const options = {
     },
 };
 
+let lastReq = null;
+
 export default function () {
     const url = 'http://host.docker.internal:8000/transfer';
-    // const url = 'http://api:8000/transfer';
-    const sender = users[Math.floor(Math.random() * users.length)];
 
-    let toId;
-    do {
-        toId = Math.floor(Math.random() * users.length) + 1;
-    } while (toId === sender.id);
+    let sender, toId, idemKey;
+    if (lastReq !== null && Math.random() < 0.1) {
+        ({ sender, toId, idemKey } = lastReq);
+    } else {
+        sender = users[Math.floor(Math.random() * users.length)];
+        do {
+            toId = Math.floor(Math.random() * users.length) + 1;
+        } while (toId === sender.id);
+        idemKey = `k6-stress-${exec.scenario.iterationInTest}-${exec.vu.idInTest}`;
+        lastReq = { sender, toId, idemKey };
+    }
 
     const payload = JSON.stringify({
-        to_account_id: toId,
+        to_id: toId,
         amount: 10
     });
-
-    const isRetry = Math.random() < 0.1;
-    const idemKey = isRetry
-        ? `k6-stress-retry-${exec.vu.idInTest}`
-        : `k6-stress-${exec.scenario.iterationInTest}-${exec.vu.idInTest}`;
 
     const params = {
         headers: {

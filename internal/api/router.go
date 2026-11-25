@@ -12,37 +12,21 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
+// NB: with 10 replicas of the same microservice, one would need to rethink the rate limiter and connection pooler and use external infrastructure (here omitted for simplicity)
+
 type contextKey string
 
 const userIDKey contextKey = "user_id"
 
-func userIDContext(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, claims, _ := jwtauth.FromContext(r.Context())
-		sub, ok := claims["sub"].(string)
-		if !ok {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-
-		ctx := context.WithValue(r.Context(), userIDKey, sub)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
-
 func NewRouter(api *APIServer, tokenAuth *jwtauth.JWTAuth) *http.ServeMux {
 	mux := http.NewServeMux()
-
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("OK"))
-	})
 
 	// business logic
 	var transferHandler http.Handler = http.HandlerFunc(api.HandleTransfer)
 
-	// bypass rate limiting during stress test
+	// bypassing rate limiter during stress test
 	if os.Getenv("STRESS_TEST") != "true" {
+		// rate limiter
 		transferHandler = httprate.LimitBy(
 			10,
 			1*time.Second,
@@ -56,15 +40,36 @@ func NewRouter(api *APIServer, tokenAuth *jwtauth.JWTAuth) *http.ServeMux {
 		)(transferHandler)
 	}
 
-	// inject user info into context
+	// user info into context
 	awareHandler := userIDContext(transferHandler)
-
-	// token validator
+	// JWT validator
 	securedHandler := jwtauth.Verifier(tokenAuth)(awareHandler)
-
-	// observability strictly delegated to OpenTelemetry
+	// OpenTelemetry
 	otelHandler := otelhttp.NewHandler(securedHandler, "POST /transfer")
 
 	mux.Handle("POST /transfer", otelHandler)
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	})
 	return mux
+}
+
+// ================================================================================================
+// HELPER FUNCTIONS
+// ================================================================================================
+
+// inject validated user id into the context for the business logic
+func userIDContext(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, claims, _ := jwtauth.FromContext(r.Context())
+		sub, ok := claims["sub"].(string)
+		if !ok {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), userIDKey, sub)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }

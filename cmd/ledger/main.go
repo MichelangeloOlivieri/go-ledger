@@ -39,7 +39,7 @@ func main() {
 
 	ctx := context.Background()
 
-	tp, err := telemetry.InitTracer(ctx, "ledger-monolith")
+	tp, err := telemetry.InitTracer(ctx, "ledger-api")
 	if err != nil {
 		slog.Error("Failed to initialize OTel", "error", err)
 	} else if tp != nil {
@@ -52,7 +52,10 @@ func main() {
 		slog.Error("Failed to parse database URL", "error", err)
 		os.Exit(1)
 	}
-	apiCfg.MaxConns = 80
+	apiCfg.MaxConns = 25
+	apiCfg.MinConns = 5
+	apiCfg.MaxConnLifetime = 30 * time.Minute
+	apiCfg.MaxConnIdleTime = 5 * time.Minute
 	apiCfg.ConnConfig.Tracer = otelpgx.NewTracer()
 
 	apiPool, err := pgxpool.NewWithConfig(ctx, apiCfg)
@@ -64,7 +67,10 @@ func main() {
 
 	// worker pool
 	workerCfg, _ := pgxpool.ParseConfig(dbUrl)
-	workerCfg.MaxConns = 20
+	workerCfg.MaxConns = 2
+	workerCfg.MinConns = 1
+	workerCfg.MaxConnLifetime = 30 * time.Minute
+	workerCfg.ConnConfig.RuntimeParams["idle_in_transaction_session_timeout"] = "15000"
 	workerCfg.ConnConfig.Tracer = otelpgx.NewTracer()
 
 	workerPool, err := pgxpool.NewWithConfig(ctx, workerCfg)
@@ -74,6 +80,7 @@ func main() {
 	}
 	defer workerPool.Close()
 
+	// publisher and worker (NB: publisher needs to be thread-safe for the worker to function)
 	eventPublisher := broker.NewConsolePublisher()
 	outboxWorker := worker.NewOutboxWorker(workerPool, eventPublisher)
 	workerCtx, workerCancel := context.WithCancel(ctx)
@@ -85,7 +92,7 @@ func main() {
 		outboxWorker.Start(workerCtx)
 	}()
 
-	// setup
+	// setup: business logic, middlewares chain and multiplexer
 	walletService := wallet.NewWalletService(apiPool)
 	apiServer := api.NewAPIServer(walletService)
 	tokenAuth := jwtauth.New("HS256", []byte(jwtSecret), nil)
@@ -99,6 +106,7 @@ func main() {
 		IdleTimeout:  15 * time.Second,
 	}
 
+	// start the server
 	go func() {
 		slog.Info("Listening on port 8000...")
 		err := srv.ListenAndServe()
@@ -130,9 +138,9 @@ func main() {
 
 	select {
 	case <-workerDone:
-		slog.Info("CDC Worker cleanly stopped.")
+		slog.Info("Polling worker cleanly stopped")
 	case <-shutdownCtx.Done():
-		slog.Error("Timeout exceeded: Forced CDC Worker shutdown")
+		slog.Error("Timeout exceeded: forced polling worker shutdown")
 	}
 
 	slog.Info("Server exited cleanly.")
