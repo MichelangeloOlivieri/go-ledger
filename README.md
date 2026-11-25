@@ -8,7 +8,7 @@ The system tackles typical distributed finance bottlenecks (double-spending, dea
 
 - **Concurrency & ACID:** Utilizes PostgreSQL pessimistic row-level locks. Enforces a strict **Lock Hierarchy** (always locking the lowest Account ID first) to avoid deadlocks during concurrent cyclic transfers. Database operations are made via `pgx.Batch` to minimize I/O chatter.
 - **Double-Entry Bookkeeping:** Transfers generate delta records in an `entries` table, ensuring the ledger state is always verifiable.
-- **Change Data Capture:** Transactional Outbox pattern: domain events are atomically committed to `outbox_events`. A background worker polls the outbox with `FOR UPDATE SKIP LOCKED`, allowing horizontal scaling of the worker pool without double-processing.
+- **Polling Worker:** Transactional Outbox pattern: domain events are atomically committed to `outbox_events`. A background worker polls the outbox with `FOR UPDATE SKIP LOCKED`, allowing horizontal scaling of the worker pool without double-processing.
 - **Idempotency:** Network anomalies and client retries are handled via `idempotency_keys` unique constraints, making duplicate API calls inherently safe at the database level.
 - **Middleware Pipeline:** 
   1. **Observability:** Context-aware RED (Rate, Errors, Duration) metrics logging.
