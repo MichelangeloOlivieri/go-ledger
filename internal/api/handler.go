@@ -13,13 +13,13 @@ import (
 	"ledger/internal/wallet"
 )
 
-// errors global variables
+// errors global variables (reduces allocs/op of HandleTransfer domain handler)
 var (
 	respInvalidJSON         = []byte(`{"error": "invalid_json_payload"}`)
 	respUnauthorized        = []byte(`{"error": "unauthorized_identity_missing"}`)
 	respMalformedIdentity   = []byte(`{"error": "malformed_identity_format"}`)
-	respInvalidAmount       = []byte(`{"error": "transfer_amount_must_be_strictly_positive"}`)
 	respSelfTransfer        = []byte(`{"error": "self_transfer_not_allowed"}`)
+	respInvalidAmount       = []byte(`{"error": "transfer_amount_must_be_strictly_positive"}`)
 	respMissingIdempotency  = []byte(`{"error": "idempotency_key_missing"}`)
 	respIdempotencyMismatch = []byte(`{"error": "idempotency_mismatch"}`)
 	respInsufficientFunds   = []byte(`{"error": "insufficient_funds"}`)
@@ -60,7 +60,6 @@ func (s *APIServer) HandleTransfer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, respUnauthorized)
 		return
 	}
-
 	fromId, err := strconv.ParseInt(userIDStr, 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, respMalformedIdentity)
@@ -82,12 +81,10 @@ func (s *APIServer) HandleTransfer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, respSelfTransfer)
 		return
 	}
-
 	if amount <= 0 {
 		writeJSON(w, http.StatusBadRequest, respInvalidAmount)
 		return
 	}
-
 	idempotencyKey := r.Header.Get("Idempotency-Key")
 	if idempotencyKey == "" {
 		writeJSON(w, http.StatusBadRequest, respMissingIdempotency)
@@ -103,6 +100,12 @@ func (s *APIServer) HandleTransfer(w http.ResponseWriter, r *http.Request) {
 		slog.ErrorContext(ctx, "transaction failed", "from", fromId, "to", req.ToId, "error", err)
 
 		switch {
+		case errors.Is(err, wallet.ErrSelfTransfer):
+			writeJSON(w, http.StatusUnprocessableEntity, respSelfTransfer)
+		case errors.Is(err, wallet.ErrInvalidAmount):
+			writeJSON(w, http.StatusUnprocessableEntity, respInvalidAmount)
+		case errors.Is(err, wallet.ErrMissingIdempotency):
+			writeJSON(w, http.StatusUnprocessableEntity, respMissingIdempotency)
 		case errors.Is(err, wallet.ErrIdempotencyMismatch):
 			writeJSON(w, http.StatusUnprocessableEntity, respIdempotencyMismatch)
 		case errors.Is(err, wallet.ErrInsufficientFunds):

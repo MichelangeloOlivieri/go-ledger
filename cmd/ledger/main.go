@@ -80,12 +80,12 @@ func main() {
 	}
 	defer workerPool.Close()
 
-	// publisher and worker (NB: publisher needs to be thread-safe for the worker to function)
+	// publisher and worker (NB: "eventPublisher" needs to be thread-safe for the worker to function)
 	eventPublisher := broker.NewConsolePublisher()
 	outboxWorker := worker.NewOutboxWorker(workerPool, eventPublisher)
 	workerCtx, workerCancel := context.WithCancel(ctx)
-	var workerWg sync.WaitGroup
 
+	var workerWg sync.WaitGroup
 	workerWg.Add(1)
 	go func() {
 		defer workerWg.Done()
@@ -116,18 +116,24 @@ func main() {
 		}
 	}()
 
-	// graceful shutdown
+	// waiting for server shutdown signal
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	slog.Info("Initiating shutdown...")
 
+	// server shutdown (api + worker)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	// sending worker shutdown signal (shutdown parallel to api's)
 	workerCancel()
-
+	// closing listeners and idle connections
 	if err = srv.Shutdown(shutdownCtx); err != nil {
-		slog.Error("Forced HTTP server shutdown", "error", err)
+		slog.Error("HTTP shutdown timed out, or an unexpected error occurred. Forcing exit", "error", err)
+		// forcing the closure
+		if closeErr := srv.Close(); closeErr != nil {
+			slog.Error("Failed to force-close HTTP server", "error", closeErr)
+		}
 	}
 
 	workerDone := make(chan struct{})
@@ -138,10 +144,16 @@ func main() {
 
 	select {
 	case <-workerDone:
-		slog.Info("Polling worker cleanly stopped")
-	case <-shutdownCtx.Done():
-		slog.Error("Timeout exceeded: forced polling worker shutdown")
+		slog.Info("Polling worker cleanly stopped.")
+	default:
+		select {
+		case <-workerDone:
+			slog.Info("Polling worker cleanly stopped.")
+		case <-shutdownCtx.Done():
+			slog.Error("Polling worker shutdown timed out, exiting anyway.")
+
+		}
 	}
 
-	slog.Info("Server exited cleanly.")
+	slog.Info("Server is now down.")
 }

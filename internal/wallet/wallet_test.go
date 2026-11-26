@@ -117,6 +117,7 @@ func TestWalletService_ACID_Transfers(t *testing.T) {
 		if errors.Is(err, ErrInsufficientFunds) {
 			continue
 		}
+		// if there is a deadlock, postgres return the string "deadlock detected"
 		if strings.Contains(strings.ToLower(err.Error()), "deadlock detected") {
 			t.Fatalf("lock hierarchy failed: deadlock detected - %v", err)
 		}
@@ -132,6 +133,19 @@ func TestWalletService_ACID_Transfers(t *testing.T) {
 	var totalEntriesBalance int64
 	if err := globalPool.QueryRow(ctx, "SELECT COALESCE(SUM(amount), 0) FROM entries;").Scan(&totalEntriesBalance); err != nil || totalEntriesBalance != 0 {
 		t.Fatalf("ACID violation on entry table: expected 0, got %d with error %v", totalEntriesBalance, err)
+	}
+
+	// transfers
+	var entriesCount int64
+	var transfersCount int64
+	if err := globalPool.QueryRow(ctx, "SELECT COUNT(*) FROM entries;").Scan(&entriesCount); err != nil {
+		t.Fatalf("Could not read from entries table: %v", err)
+	}
+	if err := globalPool.QueryRow(ctx, "SELECT COUNT(*) FROM transfers;").Scan(&transfersCount); err != nil {
+		t.Fatalf("Could not read from transfers table: %v", err)
+	}
+	if entriesCount != 2*transfersCount {
+		t.Fatalf("ACID violation: expected %d (number of entries records) to be twice %d (transfers records).", entriesCount, transfersCount)
 	}
 }
 

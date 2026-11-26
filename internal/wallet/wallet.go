@@ -20,6 +20,9 @@ func NewWalletService(db *pgxpool.Pool) *WalletService {
 }
 
 var (
+	ErrSelfTransfer        = errors.New("self transfer not allowed")
+	ErrInvalidAmount       = errors.New("non-positive amount not allowed")
+	ErrMissingIdempotency  = errors.New("missing idempotency key")
 	ErrIdempotencyMismatch = errors.New("idempotency_mismatch")
 	ErrInsufficientFunds   = errors.New("insufficient_funds")
 	ErrAccountNotFound     = errors.New("account_not_found")
@@ -28,13 +31,13 @@ var (
 // implements transfer logic (Pessimistic Lock) with Lock Hierarchy (accounts), Double-Entry Bookkeeping (entries), and Transactional Outbox (events)
 func (w *WalletService) Transfer(ctx context.Context, fromId int64, toId int64, amount int64, idempotencyKey string) error {
 	if fromId == toId {
-		return fmt.Errorf("self transfer not allowed")
+		return ErrSelfTransfer
 	}
 	if amount <= 0 {
-		return fmt.Errorf("non-positive amount not allowed")
+		return ErrInvalidAmount
 	}
 	if idempotencyKey == "" {
-		return fmt.Errorf("missing idempotency key")
+		return ErrMissingIdempotency
 	}
 
 	// 1. Begin
@@ -125,7 +128,7 @@ func (w *WalletService) Transfer(ctx context.Context, fromId int64, toId int64, 
 	}
 
 	// last three inserts
-	for range 2 {
+	for range 3 {
 		if _, err := br.Exec(); err != nil {
 			_ = br.Close()
 			return fmt.Errorf("insert failed in either entries or events table: %w", err)

@@ -139,7 +139,7 @@ func TestOutboxWorker_Baseline(t *testing.T) {
 		}
 		delete(expected, e)
 	}
-
+	// only way to detect duplicates
 	if len(expected) != 0 {
 		t.Fatalf("events payload mismatch, missing expected events: %v", expected)
 	}
@@ -173,7 +173,7 @@ func TestOutboxWorker_ConcurrentSkipLocked(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// multiple simultaneous workers try to read the same batch
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

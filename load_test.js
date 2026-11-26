@@ -25,16 +25,16 @@ let lastReq = null;
 export default function () {
     const url = 'http://host.docker.internal:8000/transfer';
 
-    let sender, toId, idemKey;
+    let sender, toId, idempotencyKey;
     if (lastReq !== null && Math.random() < 0.1) {
-        ({ sender, toId, idemKey } = lastReq);
+        ({ sender, toId, idempotencyKey } = lastReq);
     } else {
         sender = users[Math.floor(Math.random() * users.length)];
         do {
             toId = Math.floor(Math.random() * users.length) + 1;
         } while (toId === sender.id);
-        idemKey = `k6-stress-${exec.scenario.iterationInTest}-${exec.vu.idInTest}`;
-        lastReq = { sender, toId, idemKey };
+        idempotencyKey = `k6-stress-${exec.scenario.iterationInTest}-${exec.vu.idInTest}`;
+        lastReq = { sender, toId, idempotencyKey };
     }
 
     const payload = JSON.stringify({
@@ -45,7 +45,7 @@ export default function () {
     const params = {
         headers: {
             'Content-Type': 'application/json',
-            'Idempotency-Key': idemKey,
+            'Idempotency-Key': idempotencyKey,
             'Authorization': sender.token
         },
     };

@@ -40,7 +40,12 @@ func (w *OutboxWorker) Start(ctx context.Context) {
 
 			// backoff to prevent DB thrashing when empty
 			if processed == 0 {
-				time.Sleep(2 * time.Second)
+				select {
+				case <-ctx.Done():
+					slog.Info("[Polling Worker] Shutdown signal received. Halting...")
+					return
+				case <-time.After(2 * time.Second):
+				}
 			}
 		}
 	}
@@ -67,9 +72,12 @@ func (w *OutboxWorker) processBatch(ctx context.Context) int {
 		slog.ErrorContext(txCtx, "[Polling Worker] Failed to begin transaction", "error", err)
 		return 0
 	}
+	// fix: rollback throws error if txCtx is already dead (db still rolls back, but it is not a precise log)
+	rbCtx, rbCancel := context.WithTimeout(context.WithoutCancel(txCtx), 2*time.Second)
+	defer rbCancel()
 	defer func() {
-		if err := tx.Rollback(txCtx); err != nil && err != pgx.ErrTxClosed {
-			slog.ErrorContext(txCtx, "[Polling Worker] Failed to rollback transaction", "error", err)
+		if err := tx.Rollback(rbCtx); err != nil && err != pgx.ErrTxClosed {
+			slog.ErrorContext(rbCtx, "[Polling Worker] Failed to rollback transaction", "error", err)
 		}
 	}()
 
@@ -111,6 +119,7 @@ func (w *OutboxWorker) extractEvents(ctx context.Context, tx pgx.Tx) []outboxEve
 	query := `
 		SELECT id, aggregate_id, event_type, payload
 		FROM events
+		ORDER BY id ASC
 		FOR UPDATE SKIP LOCKED
 		LIMIT 100;
 	`
@@ -119,6 +128,7 @@ func (w *OutboxWorker) extractEvents(ctx context.Context, tx pgx.Tx) []outboxEve
 		slog.ErrorContext(ctx, "[Polling Worker] Failed to extract events", "error", err)
 		return []outboxEvent{}
 	}
+	defer rows.Close()
 
 	events := make([]outboxEvent, 0, 100)
 
@@ -137,6 +147,7 @@ func (w *OutboxWorker) extractEvents(ctx context.Context, tx pgx.Tx) []outboxEve
 		slog.ErrorContext(ctx, "[Polling Worker] Row iteration failed", "error", err)
 		return nil
 	}
+
 	return events
 }
 
